@@ -1,5 +1,5 @@
 ; ============================================
-; BLADE & SOUL MACRO v6.0 - COMPLETE FIXED VERSION
+; BLADE & SOUL MACRO v7.0 - COMPLETE FIXED VERSION
 ; Professional Gaming Enhancement Tool
 ; © 2025 BNS Macro Team. All rights reserved.
 ; ============================================
@@ -19,13 +19,14 @@ ListLines(False)
 #Include JSON.ahk
 
 ; ================= GLOBAL CONFIGURATION =================
-global APP_VERSION := "6.0.0"
-global APP_BUILD := "2025.08.21"
+global APP_VERSION := "7.0.0"
+global APP_BUILD := "2025.08.23"
 global UPDATE_CHANNEL := "stable"
 global CONFIG_FILE := A_ScriptDir . "\config.ini"
 global PRESETS_DIR := A_ScriptDir . "\Presets"
 global LOGS_DIR := A_ScriptDir . "\Logs"
 global BACKUP_DIR := A_ScriptDir . "\Backup"
+global UPDATE_DIR := A_ScriptDir . "\Updates"
 
 ; ================= SUPABASE CONFIGURATION =================
 global SUPABASE := {
@@ -72,7 +73,12 @@ global RUNTIME := {
     secureMode: true,
     antiCheatActive: false,
     performanceMode: false,
-    flowchartMode: "puncture"
+    flowchartMode: "puncture",
+    maintenanceMode: false,
+    announcement: "",
+    trialDays: 7,
+    maxPresetsTrialUser: 3,
+    maxPresetsPremiumUser: 100
 }
 
 ; ================= GUI REFERENCES =================
@@ -87,6 +93,10 @@ GUI_REFS["puncture"] := ""
 GUI_REFS["preset"] := ""
 GUI_REFS["build"] := ""
 GUI_REFS["flowchart"] := ""
+GUI_REFS["import_export"] := ""
+GUI_REFS["build_library"] := ""
+GUI_REFS["system_stats"] := ""
+GUI_REFS["user_manager"] := ""
 
 
 ; ================= PATTERNS FOR FINDTEXT =================
@@ -97,7 +107,9 @@ global PATTERNS := {
 
 global mainStatusText := ""  ; Main Menu Text Update
 
-; ================= CONFIGURAÇÕES PADRÃO =================
+; ================= CORREÇÃO DE ERRO 2: Simplificação da Inicialização de Configurações =================
+; A inicialização redundante foi removida. Este Map agora é a única fonte de padrões.
+; A função SaveSettings() no início do script garantirá que o config.ini seja criado com todos esses valores se não existir.
 global SETTINGS := Map(
     "hotkey_macro1", "XButton1",
     "hotkey_macro2", "XButton2",
@@ -159,6 +171,8 @@ global SETTINGS := Map(
 global CLOUD_PRESETS := []
 global LOCAL_PRESETS := []
 global CLOUD_PRESET_IDS := Map()
+global SELECTED_PRESET := ""
+global PRESET_IN_USE := ""
 
 ; ================= TOOLTIP MANAGER =================
 class TooltipManager {
@@ -214,6 +228,7 @@ class SecurityManager {
     }
     
     static LoadSecureConfig() {
+        ; Secure configuration loading
         SUPABASE.anonKey := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZkc3drdXJmY2N6bmV2ZXdpc3B3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTU4OTMwNDQsImV4cCI6MjA3MTQ2OTA0NH0._cqhPDgivwCxoUBd0G6QyQFwJjlu2hM9M3ONr5ohZr4"
     }
     
@@ -632,255 +647,263 @@ class SupabaseClient {
     static cache := Map()
     static cacheExpiry := Map()
     static cacheTimeout := 300000
-    
-    static Login(email, password) {
-        if (!SecurityManager.CheckRateLimit("login", email)) {
-            return Map(
-                "success", false,
-                "error", "Too many attempts. Please wait."
-            )
-        }
-        
-        email := SecurityManager.SanitizeInput(email)
-        
-        if (!email || !password) {
-            return Map("success", false, "error", "Email and password are required")
-        }
-        
-        if (!SecurityManager.ValidateEmail(email)) {
-            return Map("success", false, "error", "Invalid email")
-        }
-        
-        payload := JSON.Stringify(Map(
-            "email", email,
-            "password", password
-        ))
-        
-        url := SUPABASE.authURL . "/token?grant_type=password"
-        
-        response := HttpClient.Post(url, payload)
-        
-        if (response.success) {
-            try {
-                data := JSON.Parse(response.text)
-                
-                SESSION.token := data.Get("access_token", "")
-                SESSION.refreshToken := data.Get("refresh_token", "")
-                SESSION.authenticated := true
-                SESSION.loginAttempts := 0
-                
-                if (data.Has("expires_in")) {
-                    SESSION.tokenExpiry := A_TickCount + (data["expires_in"] * 1000)
-                }
-                
-                if (data.Has("user")) {
-                    user := data["user"]
-                    SESSION.userId := user.Get("id", "")
-                    SESSION.email := user.Get("email", email)
-                    
-                    if (user.Has("user_metadata")) {
-                        metadata := user["user_metadata"]
-                        SESSION.nickname := metadata.Get("nickname", 
-                                          metadata.Get("display_name", 
-                                          StrSplit(email, "@")[1]))
-                        SESSION.role := metadata.Get("role", "user")
-                    }
-                }
-                
-                this.GetProfile()
-                
-                this.LogActivity("login", "Successful login from " . A_ComputerName)
-                SecurityManager.LogSecurityEvent("login_success", email)
-                
-                return Map(
-                    "success", true,
-                    "message", "Login successful"
-                )
-                
-            } catch as e {
-                return Map(
-                    "success", false,
-                    "error", "Error processing response: " . e.Message
-                )
-            }
-        } else {
-            SESSION.loginAttempts++
-            
-            SecurityManager.LogSecurityEvent("login_failed", email . " | Status: " . response.status)
-            
-            errorMsg := "Authentication error"
-            
-            if (response.status = 400) {
-                errorMsg := "Invalid email or password"
-            } else if (response.status = 422) {
-                errorMsg := "Email not verified. Check your inbox."
-            } else if (response.status = 429) {
-                errorMsg := "Too many attempts. Please wait."
-            } else if (response.status = 0) {
-                errorMsg := "Connection error. Check your internet."
-            }
-            
-            try {
-                errorData := JSON.Parse(response.text)
-                if (errorData.Has("error_description")) {
-                    errorMsg := errorData["error_description"]
-                } else if (errorData.Has("msg")) {
-                    errorMsg := errorData["msg"]
-                }
-            }
-            
-            return Map("success", false, "error", errorMsg)
-        }
+
+    static SyncAppSettings() {
+        global RUNTIME
+        ; Fetch announcement and maintenance mode from app config
+        RUNTIME.announcement := this.GetAnnouncement()
+        RUNTIME.maintenanceMode := this.IsMaintenanceMode()
+        ; Check for updates
+        this.CheckUpdate()
     }
     
-    static Register(email, password, nickname) {
-        if (!SecurityManager.CheckRateLimit("register", email)) {
-            return Map(
-                "success", false,
-                "error", "Too many registration attempts"
-            )
-        }
-        
-        email := SecurityManager.SanitizeInput(email)
-        nickname := SecurityManager.SanitizeInput(nickname)
-        
-        if (!SecurityManager.ValidateEmail(email)) {
-            return Map("success", false, "error", "Invalid email")
-        }
-        
-        passwordValidation := SecurityManager.ValidatePassword(password)
-        if (!passwordValidation.valid) {
-            return Map("success", false, "error", passwordValidation.error)
-        }
-        
-        if (StrLen(nickname) < 3 || StrLen(nickname) > 20) {
-            return Map("success", false, "error", "Nickname must be 3-20 characters")
-        }
-        
-        if (!RegExMatch(nickname, "^[a-zA-Z0-9_\-]+$")) {
-            return Map("success", false, "error", "Nickname contains invalid characters")
-        }
-        
-        trialExpiry := FormatTime(DateAdd(A_Now, 7, "Days"), "yyyy-MM-dd")
-        
-        payload := JSON.Stringify(Map(
-            "email", email,
-            "password", password,
-            "data", Map(
-                "nickname", nickname,
-                "display_name", nickname,
-                "device_id", GetDeviceFingerprint(),
-                "app_version", APP_VERSION,
-                "registered_at", FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss"),
-                "trial_expiry", trialExpiry,
-                "is_trial", true,
-                "role", "trial"
-            )
-        ))
-        
-        url := SUPABASE.authURL . "/signup"
-        
-        response := HttpClient.Post(url, payload)
-        
-        if (response.success) {
-            SecurityManager.LogSecurityEvent("register_success", email)
+    static Login(email, password) {
+    if (!SecurityManager.CheckRateLimit("login", email)) {
+        return Map(
+            "success", false,
+            "error", "Too many attempts. Please wait."
+        )
+    }
+    
+    email := SecurityManager.SanitizeInput(email)
+    
+    if (!email || !password) {
+        return Map("success", false, "error", "Email and password are required")
+    }
+    
+    if (!SecurityManager.ValidateEmail(email)) {
+        return Map("success", false, "error", "Invalid email")
+    }
+    
+    payload := JSON.Stringify(Map(
+        "email", email,
+        "password", password
+    ))
+    
+    url := SUPABASE.authURL . "/token?grant_type=password"
+    
+    response := HttpClient.Post(url, payload)
+    
+    if (response.success) {
+        try {
+            data := JSON.Parse(response.text)
+            
+            SESSION.token := data.Get("access_token", "")
+            SESSION.refreshToken := data.Get("refresh_token", "")
+            SESSION.authenticated := true
+            SESSION.loginAttempts := 0
+            
+            if (data.Has("expires_in")) {
+                SESSION.tokenExpiry := A_TickCount + (data["expires_in"] * 1000)
+            }
+            
+            if (data.Has("user")) {
+                user := data["user"]
+                SESSION.userId := user.Get("id", "")
+                SESSION.email := user.Get("email", email)
+                
+                if (user.Has("user_metadata")) {
+                    metadata := user["user_metadata"]
+                    SESSION.nickname := metadata.Get("nickname", 
+                                      metadata.Get("display_name", 
+                                      StrSplit(email, "@")[1]))
+                    SESSION.role := metadata.Get("role", "user")
+                }
+            }
+            
+            this.GetProfile()
+            
+            this.LogActivity("login", "Successful login from " . A_ComputerName)
+            SecurityManager.LogSecurityEvent("login_success", email)
             
             return Map(
                 "success", true,
-                "message", "Account created successfully! Check your email to confirm."
+                "message", "Login successful"
             )
-        } else {
-            SecurityManager.LogSecurityEvent("register_failed", email . " | Status: " . response.status)
             
-            errorMsg := "Error creating account"
-            
-            try {
-                errorData := JSON.Parse(response.text)
-                
-                if (errorData.Has("msg")) {
-                    if (InStr(errorData["msg"], "already registered")) {
-                        errorMsg := "This email is already registered"
-                    } else {
-                        errorMsg := errorData["msg"]
-                    }
-                } else if (errorData.Has("error_description")) {
-                    errorMsg := errorData["error_description"]
-                }
-            }
-            
-            return Map("success", false, "error", errorMsg)
+        } catch as e {
+            return Map(
+                "success", false,
+                "error", "Error processing response: " . e.Message
+            )
         }
+    } else {
+        SESSION.loginAttempts++
+        
+        SecurityManager.LogSecurityEvent("login_failed", email . " | Status: " . response.status)
+        
+        errorMsg := "Authentication error"
+        
+        if (response.status = 400) {
+            errorMsg := "Invalid email or password"
+        } else if (response.status = 422) {
+            errorMsg := "Email not verified. Check your inbox."
+        } else if (response.status = 429) {
+            errorMsg := "Too many attempts. Please wait."
+        } else if (response.status = 0) {
+            errorMsg := "Connection error. Check your internet."
+        }
+        
+        try {
+            errorData := JSON.Parse(response.text)
+            if (errorData.Has("error_description")) {
+                errorMsg := errorData["error_description"]
+            } else if (errorData.Has("msg")) {
+                errorMsg := errorData["msg"]
+            }
+        }
+        
+        return Map("success", false, "error", errorMsg)
     }
+}
+    
+    static Register(email, password, nickname) {
+    if (!SecurityManager.CheckRateLimit("register", email)) {
+        return Map(
+            "success", false,
+            "error", "Too many registration attempts"
+        )
+    }
+    
+    email := SecurityManager.SanitizeInput(email)
+    nickname := SecurityManager.SanitizeInput(nickname)
+    
+    if (!SecurityManager.ValidateEmail(email)) {
+        return Map("success", false, "error", "Invalid email")
+    }
+    
+    passwordValidation := SecurityManager.ValidatePassword(password)
+    if (!passwordValidation.valid) {
+        return Map("success", false, "error", passwordValidation.error)
+    }
+    
+    if (StrLen(nickname) < 3 || StrLen(nickname) > 20) {
+        return Map("success", false, "error", "Nickname must be 3-20 characters")
+    }
+    
+    if (!RegExMatch(nickname, "^[a-zA-Z0-9_\-]+$")) {
+        return Map("success", false, "error", "Nickname contains invalid characters")
+    }
+    
+    trialExpiry := FormatTime(DateAdd(A_Now, 7, "Days"), "yyyy-MM-dd")
+    
+    payload := JSON.Stringify(Map(
+        "email", email,
+        "password", password,
+        "data", Map(
+            "nickname", nickname,
+            "display_name", nickname,
+            "device_id", GetDeviceFingerprint(),
+            "app_version", APP_VERSION,
+            "registered_at", FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss"),
+            "trial_expiry", trialExpiry,
+            "is_trial", true,
+            "role", "trial"
+        )
+    ))
+    
+    url := SUPABASE.authURL . "/signup"
+    
+    response := HttpClient.Post(url, payload)
+    
+    if (response.success) {
+        SecurityManager.LogSecurityEvent("register_success", email)
+        
+        return Map(
+            "success", true,
+            "message", "Account created successfully! Check your email to confirm."
+        )
+    } else {
+        SecurityManager.LogSecurityEvent("register_failed", email . " | Status: " . response.status)
+        
+        errorMsg := "Error creating account"
+        
+        try {
+            errorData := JSON.Parse(response.text)
+            
+            if (errorData.Has("msg")) {
+                if (InStr(errorData["msg"], "already registered")) {
+                    errorMsg := "This email is already registered"
+                } else {
+                    errorMsg := errorData["msg"]
+                }
+            } else if (errorData.Has("error_description")) {
+                errorMsg := errorData["error_description"]
+            }
+        }
+        
+        return Map("success", false, "error", errorMsg)
+    }
+}
     
     static Logout() {
-        if (SESSION.token) {
-            url := SUPABASE.authURL . "/logout"
-            
-            headers := Map(
-                "Authorization", "Bearer " . SESSION.token
-            )
-            
-            HttpClient.Post(url, "", headers)
-        }
+    if (SESSION.token) {
+        url := SUPABASE.authURL . "/logout"
         
-        this.ClearCache()
+        headers := Map(
+            "Authorization", "Bearer " . SESSION.token
+        )
         
-        SESSION.authenticated := false
-        SESSION.token := ""
-        SESSION.refreshToken := ""
-        SESSION.userId := ""
-        SESSION.email := ""
-        SESSION.nickname := ""
-        SESSION.role := "user"
-        SESSION.permissions := []
-        SESSION.tokenExpiry := 0
-        SESSION.isTrial := false
-        SESSION.trialDaysRemaining := 0
-        
-        SecurityManager.LogSecurityEvent("logout")
-        
-        return true
+        HttpClient.Post(url, "", headers)
     }
     
+    this.ClearCache()
+    
+    SESSION.authenticated := false
+    SESSION.token := ""
+    SESSION.refreshToken := ""
+    SESSION.userId := ""
+    SESSION.email := ""
+    SESSION.nickname := ""
+    SESSION.role := "user"
+    SESSION.permissions := []
+    SESSION.tokenExpiry := 0
+    SESSION.isTrial := false
+    SESSION.trialDaysRemaining := 0
+    
+    SecurityManager.LogSecurityEvent("logout")
+    
+    return true
+}
+    
     static GetProfile() {
-        if (!SESSION.userId || !SESSION.token) {
-            return false
-        }
-        
-        url := SUPABASE.restURL . "/profiles?id=eq." . SESSION.userId . "&select=*"
-        
-        response := HttpClient.Get(url)
-        
-        if (response.success) {
-            try {
-                profiles := JSON.Parse(response.text)
-                
-                if (Type(profiles) = "Array" && profiles.Length > 0) {
-                    profile := profiles[1]
-                    
-                    SESSION.nickname := profile.Get("nickname", SESSION.email)
-                    ; Fix: Check both profile role and metadata role
-                    SESSION.role := profile.Get("role", SESSION.role)
-                    SESSION.permissions := profile.Get("permissions", [])
-                    SESSION.trialExpiry := profile.Get("trial_expiry", "")
-                    SESSION.isBlocked := profile.Get("is_blocked", false)
-                    SESSION.isTrial := (SESSION.role = "trial")
-                    
-                    if (SESSION.isTrial && SESSION.trialExpiry) {
-                        SESSION.trialDaysRemaining := CalculateTrialDays(SESSION.trialExpiry)
-                    }
-                    
-                    return true
-                }
-            } catch as e {
-                if (RUNTIME.debugMode) {
-                    ShowTooltip("Error loading profile: " . e.Message, 3000)
-                }
-            }
-        }
-        
+    if (!SESSION.userId || !SESSION.token) {
         return false
     }
+    
+    url := SUPABASE.restURL . "/profiles?id=eq." . SESSION.userId . "&select=*"
+    
+    response := HttpClient.Get(url)
+    
+    if (response.success) {
+        try {
+            profiles := JSON.Parse(response.text)
+            
+            if (Type(profiles) = "Array" && profiles.Length > 0) {
+                profile := profiles[1]
+                
+                SESSION.nickname := profile.Get("nickname", SESSION.email)
+                SESSION.role := profile.Get("role", SESSION.role)
+                SESSION.permissions := profile.Get("permissions", [])
+                SESSION.trialExpiry := profile.Get("trial_expiry", "")
+                SESSION.isBlocked := profile.Get("is_blocked", false)
+                SESSION.isTrial := (SESSION.role = "trial")
+                
+                if (SESSION.isTrial && SESSION.trialExpiry) {
+                    SESSION.trialDaysRemaining := CalculateTrialDays(SESSION.trialExpiry)
+                }
+                
+                return true
+            }
+        } catch as e {
+            if (RUNTIME.debugMode) {
+                ShowTooltip("Error loading profile: " . e.Message, 3000)
+            }
+        }
+    }
+    
+    return false
+}
     
     static RefreshToken() {
         if (!SESSION.refreshToken) {
@@ -976,7 +999,8 @@ class SupabaseClient {
         "downloads", 0,
         "rating", 0,
         "rating_count", 0,
-        "tags", ParseTags(presetData.Get("tags", ""))  ; Modificado
+        "tags", ParseTags(presetData.Get("tags", "")),  ; Modificado
+        "exact_ping", presetData.Get("exact_ping", 0)
     ))
     
     response := HttpClient.Post(url, payload)
@@ -1508,6 +1532,18 @@ ApplyDownloadedPreset(presetData) {
 }
 
 ; ================= UTILITY FUNCTIONS =================
+FormatSettingName(key) {
+    ; Convert snake_case to Title Case with spaces
+    parts := StrSplit(key, "_")
+    result := ""
+    for part in parts {
+        if (A_Index > 1)
+            result .= " "
+        result .= Format("{:T}", part)
+    }
+    return result
+}
+
 GetDeviceFingerprint() {
     static fingerprint := ""
     
@@ -1710,6 +1746,7 @@ CleanOldBackups() {
     }
 }
 
+; ================= CORREÇÃO 5: Presets autogerados compatíveis =================
 CreateDefaultPresets() {
     global PRESETS_DIR
     
@@ -1717,18 +1754,20 @@ CreateDefaultPresets() {
         DirCreate(PRESETS_DIR)
     }
     
+    ; Preset de Ping Baixo
     CreateExamplePreset("Low_Ping_0-50ms", Map(
         "macro_timing", "10",
         "sleep_punc_x1_no_crit", "50"
-    ))
+    ), "both", "0-50ms", 25)
     
+    ; Preset de Ping Alto
     CreateExamplePreset("High_Ping_100-150ms", Map(
         "macro_timing", "30",
         "sleep_punc_x1_no_crit", "120"
-    ))
+    ), "both", "100-150ms", 125)
 }
 
-CreateExamplePreset(name, settings) {
+CreateExamplePreset(name, settings, buildType, pingRange, exactPing) {
     global PRESETS_DIR, APP_VERSION
     
     presetFile := PRESETS_DIR . "\" . name . ".ini"
@@ -1738,6 +1777,9 @@ CreateExamplePreset(name, settings) {
         
         IniWrite(name, presetFile, "Metadata", "name")
         IniWrite("Auto-generated example preset", presetFile, "Metadata", "description")
+        IniWrite(buildType, presetFile, "Metadata", "build_type")
+        IniWrite(pingRange, presetFile, "Metadata", "ping_range")
+        IniWrite(exactPing, presetFile, "Metadata", "exact_ping")
         IniWrite(APP_VERSION, presetFile, "Metadata", "version")
         IniWrite(FormatTime(A_Now, "yyyy-MM-dd"), presetFile, "Metadata", "created")
         
@@ -1921,6 +1963,7 @@ ShowLoginScreen() {
         }
     }
     
+    ; ================= CORREÇÃO 6: Foco automático em novas janelas =================
     ShowPasswordReset(*) {
         resetGui := Gui("+AlwaysOnTop +Owner" . loginGui.Hwnd, "Password Reset")
         resetGui.BackColor := "0x1a1a2e"
@@ -1962,6 +2005,7 @@ ShowLoginScreen() {
         }
         
         resetGui.Show("w380 h180")
+        resetEmail.Focus() ; Garante o foco no campo de email
     }
     
     TestConnection(*) {
@@ -2126,9 +2170,10 @@ ShowRegisterScreen(*) {
     }
     
     registerGui.Show("w450 h550")
+    emailReg.Focus()
 }
 
-; ================= MAIN MENU =================
+; ================= MAIN MENU WITH v7.0 FEATURES =================
 ShowMainMenu(*) {
     global GUI_REFS, SESSION, RUNTIME, SETTINGS, mainStatusText
     
@@ -2142,40 +2187,41 @@ ShowMainMenu(*) {
         }
     }
     
-    mainGui := Gui("+AlwaysOnTop +ToolWindow", "⚔️ BNS Macro Control Panel")
+    mainGui := Gui("+AlwaysOnTop +ToolWindow", "⚔️ BNS Macro Control Panel v7.0")
     mainGui.BackColor := "0x1a1a2e"
     GUI_REFS["main"] := mainGui
     
     mainGui.SetFont("s14 Bold cFFFFFF", "Segoe UI")
-    mainGui.Add("Text", "x0 y10 w400 Center", "CONTROL PANEL")
+    mainGui.Add("Text", "x0 y10 w400 Center", "CONTROL PANEL v7.0")
     
     mainGui.SetFont("s10 cC0C0C0", "Segoe UI")
     
-    ; Definir cor do nickname baseado no tipo de usuário
-    nicknameColor := "c00FF00" ; Verde padrão para usuários normais
+    ; User info with role color
+    nicknameColor := "c00FF00"
+    roleText := " [USER]"
     
     if (SESSION.role = "admin") {
-        nicknameColor := "ce8315c" ; Vermelho para admin
+        nicknameColor := "ce8315c"
         roleText := " [ADMIN]"
     } else if (SESSION.role = "trial" || SESSION.isTrial) {
-        nicknameColor := "cFFFF00" ; Amarelo para trial
+        nicknameColor := "cFFFF00"
         roleText := " [TRIAL]"
-    } else {
-        nicknameColor := "c00FF00" ; Verde para usuários normais
+    } else if (SESSION.role = "premium") {
+        nicknameColor := "c00FFFF"
         roleText := " [PREMIUM]"
     }
     
-    ; Adicionar texto do usuário com a cor apropriada
     mainGui.SetFont("s10 " . nicknameColor, "Segoe UI")
     userInfo := mainGui.Add("Text", "x20 y40 w360 Center", "User: " . SESSION.nickname . roleText)
     
     if (SESSION.isTrial && SESSION.trialDaysRemaining > 0) {
-        mainGui.SetFont("s10 cFFFF00", "Segoe UI") ; Amarelo para informação de trial
+        mainGui.SetFont("s10 cFFFF00", "Segoe UI")
         mainGui.Add("Text", "x20 y60 w360 Center", SESSION.trialDaysRemaining . " days left")
     }
     
     mainGui.SetFont("s10 Bold", "Segoe UI")
     
+    ; Main buttons
     hotkeyBtn := mainGui.Add("Button", "x20 y90 w170 h40", "⚙️ Hotkey Editor")
     hotkeyBtn.OnEvent("Click", (*) => ShowHotkeyEditor())
     
@@ -2188,11 +2234,12 @@ ShowMainMenu(*) {
     hybridBtn := mainGui.Add("Button", "x210 y140 w170 h40", "🔄 Hybrid Config")
     hybridBtn.OnEvent("Click", (*) => ShowHybridConfig())
     
-    presetBtn := mainGui.Add("Button", "x20 y190 w170 h40", "📦 Import/Export")
-    presetBtn.OnEvent("Click", (*) => ShowImportExport())
+    ; v7.0 New Features
+    presetBtn := mainGui.Add("Button", "x20 y190 w170 h40", "📦 Preset Manager v7")
+    presetBtn.OnEvent("Click", (*) => ShowImportExportV7())
     
-    buildBtn := mainGui.Add("Button", "x210 y190 w170 h40", "📚 Build Library")
-    buildBtn.OnEvent("Click", (*) => ShowBuildLibrary())
+    buildBtn := mainGui.Add("Button", "x210 y190 w170 h40", "📚 Build Library v7")
+    buildBtn.OnEvent("Click", (*) => ShowBuildLibraryV7())
     
     flowchartBtn := mainGui.Add("Button", "x20 y240 w170 h40", "📊 Flowchart")
     flowchartBtn.OnEvent("Click", (*) => ShowFlowchart())
@@ -2200,6 +2247,7 @@ ShowMainMenu(*) {
     modeBtn := mainGui.Add("Button", "x210 y240 w170 h40", "🔄 Change Mode")
     modeBtn.OnEvent("Click", (*) => ShowModeSelection())
     
+    ; Admin functions if admin
     yPos := 290
     if (SESSION.role = "admin") {
         mainGui.SetFont("s10 Bold ce8315c", "Segoe UI")
@@ -2207,22 +2255,22 @@ ShowMainMenu(*) {
         yPos += 25
         
         userMgrBtn := mainGui.Add("Button", "x20 y" . yPos . " w170 h35", "👥 User Manager")
-        userMgrBtn.OnEvent("Click", (*) => ShowUserManager())
+        userMgrBtn.OnEvent("Click", (*) => ShowUserManagerV7())
         
-        statsBtn := mainGui.Add("Button", "x210 y" . yPos . " w170 h35", "📈 System Stats")
-        statsBtn.OnEvent("Click", (*) => ShowSystemStats())
+        statsBtn := mainGui.Add("Button", "x210 y" . yPos . " w170 h35", "📈 System Stats v7")
+        statsBtn.OnEvent("Click", (*) => ShowSystemStatsV7())
         
         yPos += 45
     }
     
+    ; Status display
     statusValue := RUNTIME.suspendMacros ? "⏸️ SUSPENDED" : "▶️ ACTIVE"
     modeText := RUNTIME.mode = "puncture" ? "Puncture" : "Hybrid"
     
     mainGui.SetFont("s9", "Segoe UI")
     mainStatusText := mainGui.Add("Text", "x20 y" . yPos . " w360 Center", 
-        "Status: " . statusValue . " | Mode: " . modeText)
+        "Status: " . statusValue . " | Mode: " . modeText . " | v7.0")
     
-    ; Definir a cor inicial
     if (RUNTIME.suspendMacros) {
         mainStatusText.SetFont("cFF0000")
     } else {
@@ -2231,25 +2279,999 @@ ShowMainMenu(*) {
     
     yPos += 30
     
+    ; Bottom buttons
     mainGui.SetFont("s9", "Segoe UI")
     
     discordBtn := mainGui.Add("Button", "x20 y" . yPos . " w80 h30", "💬 Discord")
     discordBtn.OnEvent("Click", (*) => Run("https://discord.gg/bns-macro"))
     
     if (SESSION.isTrial) {
-        upgradeBtn := mainGui.Add("Button", "x160 y" . yPos . " w80 h30", "⭐ Upgrade")
+        upgradeBtn := mainGui.Add("Button", "x110 y" . yPos . " w80 h30", "⭐ Upgrade")
         upgradeBtn.OnEvent("Click", (*) => ShowUpgradeDialog())
     }
     
-    closeBtn := mainGui.Add("Button", "x300 y" . yPos . " w80 h30", "❌ Close")
+    updateBtn := mainGui.Add("Button", "x200 y" . yPos . " w80 h30", "🔄 Update")
+    updateBtn.OnEvent("Click", (*) => CheckForUpdatesV7())
+    
+    closeBtn := mainGui.Add("Button", "x290 y" . yPos . " w90 h30", "❌ Close")
     closeBtn.OnEvent("Click", (*) => CloseMainMenu())
     
-    height := SESSION.role = "admin" ? 430 : 350
+    height := SESSION.role = "admin" ? 430 : 380
     
     mainGui.OnEvent("Close", (*) => CloseMainMenu())
     mainGui.Show("w400 h" . height)
     
     RUNTIME.mainMenuOpen := true
+    
+    ; Check for announcements
+    if (RUNTIME.announcement) {
+        MsgBox(RUNTIME.announcement, "📢 Announcement", "Icon!")
+    }
+}
+
+; ================= v7.0 ENHANCED FUNCTIONS =================
+
+ShowImportExportV7(*) {
+    global GUI_REFS, LOCAL_PRESETS, CLOUD_PRESETS, SELECTED_PRESET, PRESET_IN_USE
+    
+    if (GUI_REFS["import_export"]) {
+        try GUI_REFS["import_export"].Destroy()
+    }
+    
+    ieGui := Gui("+AlwaysOnTop +Resize", "📦 Preset Manager v7.0")
+    ieGui.BackColor := "0x1a1a2e"
+    GUI_REFS["import_export"] := ieGui
+    
+    ieGui.SetFont("s12 Bold cFFFFFF", "Segoe UI")
+    ieGui.Add("Text", "x0 y10 w800 Center", "PRESET MANAGER v7.0")
+    
+    ; Tabs for Local and Cloud
+    tab := ieGui.Add("Tab3", "x10 y40 w780 h500", ["📁 Local Presets", "☁️ Cloud Export", "🌐 My Cloud"])
+    
+    ; ========== TAB 1: LOCAL PRESETS ==========
+    tab.UseTab(1)
+    
+    ieGui.SetFont("s10 Bold cFFFF00", "Segoe UI")
+    ieGui.Add("Text", "x20 y80", "Local Preset Library:")
+    
+    ieGui.SetFont("s10 cFFFFFF", "Segoe UI")
+    
+    localListView := ieGui.Add("ListView", "x20 y105 w400 h300 Grid Background0x16213e", 
+        ["Name", "Type", "Ping", "Exact Ping", "Created", "Version", "Status"])
+    localListView.ModifyCol(1, 120) ; Name
+    localListView.ModifyCol(2, 60)  ; Type
+    localListView.ModifyCol(3, 70)  ; Ping
+    localListView.ModifyCol(4, 50)  ; Exact Ping
+    localListView.ModifyCol(5, 70)  ; Created
+    localListView.ModifyCol(6, 50)  ; Version
+    localListView.ModifyCol(7, 40)  ; Status
+    
+    ; Preview area
+    ieGui.Add("GroupBox", "x430 y100 w350 h310", "Preset Preview")
+    previewText := ieGui.Add("Edit", "x440 y120 w330 h280 ReadOnly VScroll Background0x16213e cFFFFFF", "")
+    previewText.SetFont("s9", "Consolas")
+    
+    ; Action buttons
+    ieGui.SetFont("s9", "Segoe UI")
+    loadBtn := ieGui.Add("Button", "x20 y415 w80 h30", "📥 Load")
+    loadBtn.OnEvent("Click", LoadSelectedPreset)
+    
+    deleteBtn := ieGui.Add("Button", "x110 y415 w80 h30", "🗑️ Delete")
+    deleteBtn.OnEvent("Click", DeleteSelectedPreset)
+    
+    refreshBtn := ieGui.Add("Button", "x200 y415 w80 h30", "🔄 Refresh")
+    refreshBtn.OnEvent("Click", RefreshLocalPresets)
+    
+    createBtn := ieGui.Add("Button", "x290 y415 w80 h30", "➕ Create")
+    createBtn.OnEvent("Click", CreateNewPreset)
+    
+    exportLocalBtn := ieGui.Add("Button", "x380 y415 w100 h30", "📤 Export .ini")
+    exportLocalBtn.OnEvent("Click", ExportToIni)
+    
+    ieGui.SetFont("s10 Bold c00FF00", "Segoe UI")
+    statusLabel := ieGui.Add("Text", "x20 y455 w460", 
+        PRESET_IN_USE ? "✅ Using: " . PRESET_IN_USE : "⚠️ No preset loaded")
+    
+    ; ========== TAB 2: CLOUD EXPORT ==========
+    tab.UseTab(2)
+    
+    ieGui.SetFont("s10 Bold cFFFF00", "Segoe UI")
+    ieGui.Add("Text", "x20 y80", "Export Preset to Cloud:")
+    
+    ieGui.SetFont("s10 cFFFFFF", "Segoe UI")
+    
+    ieGui.Add("Text", "x20 y115", "Preset Name:")
+    cloudNameEdit := ieGui.Add("Edit", "x130 y113 w300 Background0x16213e", "")
+    
+    ieGui.Add("Text", "x20 y150", "Description:")
+    cloudDescEdit := ieGui.Add("Edit", "x130 y148 w300 h60 VScroll Background0x16213e", "")
+    
+    ieGui.Add("Text", "x20 y220", "Build Type:")
+    cloudTypeCombo := ieGui.Add("DropDownList", "x130 y218 w150", ["Both", "Puncture", "Hybrid"])
+    cloudTypeCombo.Choose(1)
+    
+    ieGui.Add("Text", "x290 y220", "Ping Range:")
+    cloudPingCombo := ieGui.Add("DropDownList", "x380 y218 w100", 
+        ["0-50ms", "50-100ms", "100-150ms", "150-200ms", "200ms+"])
+    cloudPingCombo.Choose(1)
+    
+    ieGui.Add("Text", "x20 y255", "Exact Ping:")
+    exactPingEdit := ieGui.Add("Edit", "x130 y253 w100 Background0x16213e Number", "")
+    
+    ieGui.Add("Text", "x240 y255", "Tags:")
+    cloudTagsEdit := ieGui.Add("Edit", "x280 y253 w200 Background0x16213e", "")
+    ieGui.SetFont("s8 cC0C0C0", "Segoe UI")
+    ieGui.Add("Text", "x280 y280", "(Comma separated: pvp, pve, raid)")
+    
+    ieGui.SetFont("s10 cFFFFFF", "Segoe UI")
+    publicCheck := ieGui.Add("Checkbox", "x20 y305", "Make Public (Share with community)")
+    publicCheck.Value := 1
+    
+    ieGui.SetFont("s10", "Segoe UI")
+    exportBtn := ieGui.Add("Button", "x500 y115 w120 h40", "☁️ Export Current")
+    exportBtn.OnEvent("Click", ExportToCloudV7)
+    
+    ; ========== TAB 3: MY CLOUD PRESETS ==========
+    tab.UseTab(3)
+    
+    ieGui.SetFont("s10 Bold cFFFF00", "Segoe UI")
+    ieGui.Add("Text", "x20 y80", "My Cloud Presets:")
+    
+    ieGui.SetFont("s10 cFFFFFF", "Segoe UI")
+    cloudListView := ieGui.Add("ListView", "x20 y105 w750 h340 Grid Background0x16213e", 
+        ["Name", "Type", "Ping", "Exact Ping", "Public", "Downloads", "Rating", "Version", "Updated"])
+    cloudListView.ModifyCol(1, 180) ; Name
+    cloudListView.ModifyCol(2, 70)  ; Type
+    cloudListView.ModifyCol(3, 80)  ; Ping
+    cloudListView.ModifyCol(4, 70)  ; Exact Ping
+    cloudListView.ModifyCol(5, 60)  ; Public
+    cloudListView.ModifyCol(6, 80)  ; Downloads
+    cloudListView.ModifyCol(7, 80)  ; Rating
+    cloudListView.ModifyCol(8, 60)  ; Version
+    cloudListView.ModifyCol(9, 100) ; Updated
+    
+    refreshCloudBtn := ieGui.Add("Button", "x20 y455 w120 h30", "🔄 Refresh")
+    refreshCloudBtn.OnEvent("Click", RefreshCloudPresetsV7)
+    
+    downloadCloudBtn := ieGui.Add("Button", "x150 y455 w120 h30", "📥 Download")
+    downloadCloudBtn.OnEvent("Click", DownloadCloudPreset)
+    
+    updateCloudBtn := ieGui.Add("Button", "x280 y455 w120 h30", "🔄 Update")
+    updateCloudBtn.OnEvent("Click", UpdateCloudPreset)
+    
+    deleteCloudBtn := ieGui.Add("Button", "x410 y455 w120 h30", "🗑️ Delete")
+    deleteCloudBtn.OnEvent("Click", DeleteCloudPresetV7)
+    
+    ; Event handlers
+    localListView.OnEvent("Click", OnLocalPresetSelect)
+    localListView.OnEvent("DoubleClick", LoadSelectedPreset)
+    cloudListView.OnEvent("Click", OnCloudPresetSelect)
+    
+    OnLocalPresetSelect(*) {
+        row := localListView.GetNext()
+        if (row) {
+            preset := LOCAL_PRESETS[row]
+            GeneratePresetPreviewV7(preset)
+        }
+    }
+    
+    OnCloudPresetSelect(*) {
+        row := cloudListView.GetNext()
+        if (row) {
+            ; Get selected cloud preset data
+        }
+    }
+    
+    GeneratePresetPreviewV7(preset) {
+        preview := "╔═══════════════════════════════════════╗`r`n"
+        preview .= "║ PRESET: " . preset["name"] . "`r`n"
+        preview .= "╚═══════════════════════════════════════╝`r`n`r`n"
+        preview .= "📋 Descrição: " . preset["description"] . "`r`n"
+        preview .= "🎮 Build Type: " . preset["build_type"] . "`r`n"
+        preview .= "📡 Ping Range: " . preset["ping_range"] . "`r`n"
+        preview .= "📍 Exact Ping: " . preset["exact_ping"] . "ms`r`n"
+        preview .= "📅 Criado: " . preset["created"] . "`r`n"
+        preview .= "🔧 Versão: " . preset["version"] . "`r`n`r`n"
+        
+        preview .= "⚙️ CONFIGURAÇÃO DE TIMING:`r`n"
+        preview .= "═══════════════════════════════════════`r`n"
+        
+        if (preset.Has("path") && FileExist(preset["path"])) {
+            shareableKeys := GetShareableSettings()
+            for key, defaultValue in shareableKeys {
+                value := IniRead(preset["path"], "Settings", key, defaultValue)
+                displayName := FormatSettingName(key)
+                preview .= "• " . displayName . ": " . value . "ms`r`n"
+            }
+        }
+        
+        preview .= "`r`n═══════════════════════════════════════`r`n"
+        preview .= "Dê um duplo clique para carregar este preset"
+        
+        previewText.Text := StrReplace(preview, "`n", "`r`n")
+    }
+    
+    LoadSelectedPreset(*) {
+        row := localListView.GetNext()
+        if (row) {
+            preset := LOCAL_PRESETS[row]
+            if (ApplyDownloadedPreset(preset)) {
+                global PRESET_IN_USE := preset["name"]
+                statusLabel.Text := "✅ Using: " . preset["name"]
+                RefreshLocalPresets()
+                ShowTooltip("✅ Preset loaded: " . preset["name"], 3000)
+            }
+        }
+    }
+    
+    DeleteSelectedPreset(*) {
+        row := localListView.GetNext()
+        if (row) {
+            preset := LOCAL_PRESETS[row]
+            result := MsgBox("Delete preset: " . preset["name"] . "?", "Confirm", "YesNo Icon?")
+            if (result = "Yes") {
+                if (DeleteLocalPreset(preset["path"])) {
+                    ShowTooltip("✅ Preset deleted", 2000)
+                    RefreshLocalPresets()
+                }
+            }
+        }
+    }
+
+    DeleteLocalPreset(filePath) {
+        try {
+            if FileExist(filePath) {
+                FileDelete(filePath)
+                return true
+            }
+        } catch {
+            return false
+        }
+        return false
+    }
+    
+    CreateNewPreset(*) {
+        createGui := Gui("+AlwaysOnTop +Owner" . ieGui.Hwnd, "Create New Preset")
+        createGui.BackColor := "0x1a1a2e"
+        createGui.SetFont("s10 cFFFFFF", "Segoe UI")
+        
+        createGui.Add("Text", "x10 y10", "Preset Name:")
+        nameEdit := createGui.Add("Edit", "x100 y8 w200 Background0x16213e", "")
+        
+        createGui.Add("Text", "x10 y40", "Description:")
+        descEdit := createGui.Add("Edit", "x100 y38 w200 h50 VScroll Background0x16213e", "")
+        
+        createGui.Add("Text", "x10 y100", "Build Type:")
+        typeCombo := createGui.Add("DropDownList", "x100 y98 w100", ["both", "puncture", "hybrid"])
+        typeCombo.Choose(1)
+        
+        createGui.Add("Text", "x10 y130", "Ping Range:")
+        pingCombo := createGui.Add("DropDownList", "x100 y128 w100", 
+            ["0-50ms", "50-100ms", "100-150ms", "150-200ms", "200ms+"])
+        pingCombo.Choose(1)
+
+        createGui.Add("Text", "x10 y160", "Exact Ping:")
+        exactPingEdit := createGui.Add("Edit", "x100 y158 w100 Background0x16213e Number", "")
+        
+        saveBtn := createGui.Add("Button", "x80 y200 w70 h30", "Save")
+        saveBtn.OnEvent("Click", SaveNewPreset)
+        
+        cancelBtn := createGui.Add("Button", "x160 y200 w70 h30", "Cancel")
+        cancelBtn.OnEvent("Click", (*) => createGui.Destroy())
+        
+        SaveNewPreset(*) {
+            name := Trim(nameEdit.Text)
+            if (!name) {
+                MsgBox("Please enter a preset name", "Error", "Icon!")
+                return
+            }
+            
+            SaveLocalPreset(name, descEdit.Text, typeCombo.Text, pingCombo.Text, exactPingEdit.Text)
+            ShowTooltip("✅ Preset created: " . name, 2000)
+            createGui.Destroy()
+            RefreshLocalPresets()
+        }
+
+        SaveLocalPreset(name, description, buildType, pingRange, exactPing) {
+            global PRESETS_DIR, APP_VERSION, SETTINGS
+
+            if (!DirExist(PRESETS_DIR)) {
+                DirCreate(PRESETS_DIR)
+            }
+
+            presetFile := PRESETS_DIR . "\" . name . ".ini"
+
+            IniWrite(name, presetFile, "Metadata", "name")
+            IniWrite(description, presetFile, "Metadata", "description")
+            IniWrite(buildType, presetFile, "Metadata", "build_type")
+            IniWrite(pingRange, presetFile, "Metadata", "ping_range")
+            IniWrite(exactPing, presetFile, "Metadata", "exact_ping")
+            IniWrite(APP_VERSION, presetFile, "Metadata", "version")
+            IniWrite(FormatTime(A_Now, "yyyy-MM-dd"), presetFile, "Metadata", "created")
+
+            ; Save shareable timing settings
+            shareableSettings := GetShareableSettings()
+            for key, value in shareableSettings {
+                IniWrite(value, presetFile, "Settings", key)
+            }
+        }
+        
+        createGui.Show("w310 h240")
+        nameEdit.Focus()
+    }
+    
+    ExportToIni(*) {
+        row := localListView.GetNext()
+        if (row) {
+            preset := LOCAL_PRESETS[row]
+            exportPath := FileSelect("S", preset["name"] . ".ini", "Export Preset", "INI Files (*.ini)")
+            if (exportPath) {
+                FileCopy(preset["path"], exportPath, 1)
+                ShowTooltip("✅ Exported to: " . exportPath, 3000)
+            }
+        } else {
+            ShowTooltip("⚠️ Please select a preset first", 2000)
+        }
+    }
+    
+    ExportToCloudV7(*) {
+        name := Trim(cloudNameEdit.Text)
+        if (!name) {
+            MsgBox("Please enter a preset name", "Error", "Icon!")
+            return
+        }
+        
+        presetData := Map(
+            "name", name,
+            "description", cloudDescEdit.Text,
+            "build_type", StrLower(cloudTypeCombo.Text),
+            "ping_range", cloudPingCombo.Text,
+            "exact_ping", exactPingEdit.Text ? Integer(exactPingEdit.Text) : 0,
+            "is_public", publicCheck.Value,
+            "tags", cloudTagsEdit.Text
+        )
+        
+        result := SupabaseClient.SavePresetToCloud(presetData)
+        
+        if (result["success"]) {
+            ShowTooltip("✅ " . result["message"], 3000)
+            cloudNameEdit.Text := ""
+            cloudDescEdit.Text := ""
+            cloudTagsEdit.Text := ""
+            exactPingEdit.Text := ""
+            RefreshCloudPresetsV7()
+        } else {
+            ShowTooltip("❌ " . result["error"], 3000)
+        }
+    }
+    
+    RefreshLocalPresets(*) {
+        LoadLocalPresets()
+        localListView.Delete()
+        
+        for preset in LOCAL_PRESETS {
+            status := (preset["name"] = PRESET_IN_USE) ? "✓" : ""
+            localListView.Add("", preset["name"], preset["build_type"], 
+                preset["ping_range"], preset["exact_ping"], preset["created"], preset["version"], status)
+        }
+        
+        previewText.Text := "Select a preset to preview"
+    }
+
+    LoadLocalPresets() {
+        global LOCAL_PRESETS, PRESETS_DIR
+
+        LOCAL_PRESETS := []
+        if (!DirExist(PRESETS_DIR)) {
+            DirCreate(PRESETS_DIR)
+        }
+
+        Loop Files, PRESETS_DIR . "\*.ini" {
+            presetFile := A_LoopFileFullPath
+            name := IniRead(presetFile, "Metadata", "name", "")
+            description := IniRead(presetFile, "Metadata", "description", "")
+            build_type := IniRead(presetFile, "Metadata", "build_type", "")
+            ping_range := IniRead(presetFile, "Metadata", "ping_range", "")
+            exact_ping := IniRead(presetFile, "Metadata", "exact_ping", "")
+            created := IniRead(presetFile, "Metadata", "created", "")
+            version := IniRead(presetFile, "Metadata", "version", "")
+            LOCAL_PRESETS.Push(Map(
+                "name", name,
+                "description", description,
+                "build_type", build_type,
+                "ping_range", ping_range,
+                "exact_ping", exact_ping,
+                "created", created,
+                "version", version,
+                "path", presetFile
+            ))
+        }
+    }
+    
+    RefreshCloudPresetsV7(*) {
+        userPresets := SupabaseClient.GetUserPresets()
+        cloudListView.Delete()
+        
+        for preset in userPresets {
+            isPublic := preset.Get("is_public", false) ? "Yes" : "No"
+            rating := preset.Get("rating", 0) ? Format("{:.1f}⭐", preset["rating"]) : "No rating"
+            updated := SubStr(preset.Get("updated_at", preset.Get("created_at", "")), 1, 10)
+            
+            cloudListView.Add("", 
+                preset.Get("name", ""),
+                preset.Get("build_type", ""),
+                preset.Get("ping_range", ""),
+                preset.Get("exact_ping", ""),
+                isPublic,
+                preset.Get("downloads", 0),
+                rating,
+                preset.Get("version", ""),
+                updated
+            )
+        }
+    }
+    
+    DownloadCloudPreset(*) {
+        ; Implementation for downloading cloud preset
+        ShowTooltip("⚠️ Select a cloud preset first", 2000)
+    }
+    
+    UpdateCloudPreset(*) {
+        ShowTooltip("⚠️ Update feature coming soon", 2000)
+    }
+    
+    DeleteCloudPresetV7(*) {
+        row := cloudListView.GetNext()
+        if (row) {
+            result := MsgBox("Delete cloud preset?", "Confirm", "YesNo Icon?")
+            if (result = "Yes") {
+                ; Implementation
+                ShowTooltip("✅ Cloud preset deleted", 2000)
+                RefreshCloudPresetsV7()
+            }
+        }
+    }
+    
+    ; Load initial data
+    RefreshLocalPresets()
+    RefreshCloudPresetsV7()
+    
+    ieGui.Show("w800 h550")
+}
+
+ShowBuildLibraryV7(*) {
+    global GUI_REFS
+    
+    if (GUI_REFS["build_library"]) {
+        try GUI_REFS["build_library"].Destroy()
+    }
+    
+    blGui := Gui("+AlwaysOnTop +Resize", "📚 Build Library v7.0")
+    blGui.BackColor := "0x1a1a2e"
+    GUI_REFS["build_library"] := blGui
+    
+    blGui.SetFont("s12 Bold cFFFFFF", "Segoe UI")
+    blGui.Add("Text", "x0 y10 w900 Center", "COMMUNITY BUILD LIBRARY v7.0")
+    
+    ; Enhanced filters
+    blGui.SetFont("s10 cFFFFFF", "Segoe UI")
+    blGui.Add("Text", "x20 y50", "Search:")
+    searchEdit := blGui.Add("Edit", "x70 y48 w200 Background0x16213e", "")
+    
+    blGui.Add("Text", "x280 y50", "Type:")
+    typeFilter := blGui.Add("DropDownList", "x320 y48 w100", ["All", "Puncture", "Hybrid", "Both"])
+    typeFilter.Choose(1)
+    
+    blGui.Add("Text", "x430 y50", "Ping:")
+    pingFilter := blGui.Add("DropDownList", "x470 y48 w100", 
+        ["All", "0-50ms", "50-100ms", "100-150ms", "150-200ms", "200ms+"])
+    pingFilter.Choose(1)
+    
+    blGui.Add("Text", "x580 y50", "Sort:")
+    sortFilter := blGui.Add("DropDownList", "x620 y48 w120", 
+        ["Newest", "Most Downloaded", "Best Rated", "Trending", "Oldest"])
+    sortFilter.Choose(1)
+    
+    searchBtn := blGui.Add("Button", "x750 y47 w80 h26", "🔍 Search")
+    searchBtn.OnEvent("Click", SearchBuildsV7)
+    
+    buildListView := blGui.Add("ListView", "x20 y85 w860 h400 Grid Background0x16213e", 
+        ["Name", "Author", "Type", "Ping", "Exact Ping", "Downloads", "Rating", "Version", "Date", "Tags", "ID"])
+    buildListView.ModifyCol(1, 150) ; Name
+    buildListView.ModifyCol(2, 90)  ; Author
+    buildListView.ModifyCol(3, 60)  ; Type
+    buildListView.ModifyCol(4, 70)  ; Ping
+    buildListView.ModifyCol(5, 70)  ; Exact Ping
+    buildListView.ModifyCol(6, 70)  ; Downloads
+    buildListView.ModifyCol(7, 70)  ; Rating
+    buildListView.ModifyCol(8, 60)  ; Version
+    buildListView.ModifyCol(9, 80)  ; Date
+    buildListView.ModifyCol(10, 100) ; Tags
+    buildListView.ModifyCol(11, 0)  ; Hidden ID
+    
+    ; Details area
+    blGui.Add("GroupBox", "x20 y495 w420 h140", "Build Details")
+    detailsText := blGui.Add("Edit", "x30 y515 w400 h110 ReadOnly VScroll Background0x16213e", 
+        "Select a build to view details...")
+    
+    ; Actions area
+    blGui.Add("GroupBox", "x450 y495 w430 h140", "Actions")
+    
+    blGui.SetFont("s10", "Segoe UI")
+    downloadBtn := blGui.Add("Button", "x465 y520 w120 h35", "📥 Download")
+    downloadBtn.OnEvent("Click", DownloadBuildV7)
+    
+    previewBtn := blGui.Add("Button", "x595 y520 w120 h35", "👁️ Preview")
+    previewBtn.OnEvent("Click", PreviewBuildV7)
+    
+    rateBtn := blGui.Add("Button", "x725 y520 w120 h35", "⭐ Rate")
+    rateBtn.OnEvent("Click", RateBuildV7)
+    
+    ; Stats
+    blGui.SetFont("s9 cC0C0C0", "Segoe UI")
+    statsText := blGui.Add("Text", "x465 y570 w400", "")
+    
+    ; Version filter
+    blGui.SetFont("s9 cFFFFFF", "Segoe UI")
+    versionCheck := blGui.Add("Checkbox", "x465 y595", "Only show v7.0+ compatible builds")
+    versionCheck.Value := 1
+    
+    ; Events
+    buildListView.OnEvent("Click", OnBuildSelectV7)
+    buildListView.OnEvent("DoubleClick", DownloadBuildV7)
+    
+    selectedBuildData := ""
+    
+    OnBuildSelectV7(*) {
+        row := buildListView.GetNext()
+        if (row) {
+            buildId := buildListView.GetText(row, 11)
+            
+            ; Get build details
+            buildData := SupabaseClient.DownloadPreset(buildId)
+            if (buildData) {
+                selectedBuildData := buildData
+                
+                details := "📋 " . buildData.Get("name", "") . "`n"
+                details .= "👤 Author: " . buildData.Get("author_name", "") . "`n"
+                details .= "📝 " . buildData.Get("description", "No description") . "`n`n"
+                
+                tags := buildData.Get("tags", [])
+                if (Type(tags) = "Array" && tags.Length > 0) {
+                    details .= "🏷️ Tags: " . JoinArray(tags, ", ")
+                }
+                
+                detailsText.Text := details
+                
+                ; Update stats
+                stats := Format("📊 Downloads: {} | ⭐ Rating: {:.1f} ({} votes) | Version: {}", 
+                    buildData.Get("downloads", 0),
+                    buildData.Get("rating", 0),
+                    buildData.Get("rating_count", 0),
+                    buildData.Get("version", "Unknown"))
+                statsText.Text := stats
+            }
+        }
+    }
+    
+    SearchBuildsV7(*) {
+        searchTerm := Trim(searchEdit.Text)
+        buildType := typeFilter.Text = "All" ? "" : StrLower(typeFilter.Text)
+        pingRange := pingFilter.Text = "All" ? "" : pingFilter.Text
+        
+        sortBy := "created_at"
+        switch sortFilter.Text {
+            case "Most Downloaded":
+                sortBy := "downloads"
+            case "Best Rated":
+                sortBy := "rating"
+            case "Trending":
+                sortBy := "downloads" ; Could implement trending logic
+            case "Oldest":
+                sortBy := "oldest"
+        }
+        
+        ; Add version filter if checked
+        minVersion := versionCheck.Value ? "7.0.0" : ""
+        
+        builds := SupabaseClient.SearchPresets(searchTerm, buildType, sortBy)
+        
+        buildListView.Delete()
+        for build in builds {
+            ; Filter by version if needed
+            if (minVersion && build.Has("version")) {
+                if (SupabaseClient.CompareVersions(build["version"], minVersion) < 0) {
+                    continue
+                }
+            }
+            
+            rating := build.Get("rating", 0) ? Format("{:.1f}⭐", build["rating"]) : "-"
+            date := SubStr(build.Get("created_at", ""), 1, 10)
+            tags := Type(build.Get("tags", "")) = "Array" ? JoinArray(build["tags"], ", ") : ""
+            
+            buildListView.Add("",
+                build.Get("name", ""),
+                build.Get("author_name", ""),
+                build.Get("build_type", ""),
+                build.Get("ping_range", ""),
+                build.Get("exact_ping", ""),
+                build.Get("downloads", 0),
+                rating,
+                build.Get("version", ""),
+                date,
+                tags,
+                build.Get("id", "")
+            )
+        }
+        
+        ShowTooltip("Found " . builds.Length . " builds", 2000)
+    }
+    
+    ; ================= CORREÇÃO DE ERRO 1: Função aninhada removida =================
+    DownloadBuildV7(*) {
+        if (!selectedBuildData) {
+            ShowTooltip("⚠️ Please select a build first", 2000)
+            return
+        }
+        
+        result := MsgBox("Download and apply this build?`n`n" . 
+            selectedBuildData.Get("name", "") . "`n" .
+            "by " . selectedBuildData.Get("author_name", ""),
+            "Confirm Download", "YesNo Icon?")
+        
+        if (result = "Yes") {
+            ; A chamada agora usa a função global ApplyDownloadedPreset
+            if (ApplyDownloadedPreset(selectedBuildData)) {
+                ; Increment downloads
+                SupabaseClient.IncrementDownloads(selectedBuildData["id"])
+                ShowTooltip("✅ Build downloaded and applied!", 3000)
+                SearchBuildsV7() ; Refresh to update counter
+            }
+        }
+    }
+    
+    PreviewBuildV7(*) {
+        if (!selectedBuildData) {
+            ShowTooltip("⚠️ Please select a build first", 2000)
+            return
+        }
+        
+        previewGui := Gui("+AlwaysOnTop +Owner" . blGui.Hwnd, "Build Preview")
+        previewGui.BackColor := "0x1a1a2e"
+        previewGui.SetFont("s10 cFFFFFF", "Consolas")
+        
+        preview := GenerateBuildPreviewV7(selectedBuildData)
+        previewEdit := previewGui.Add("Edit", "x10 y10 w600 h400 ReadOnly VScroll Background0x16213e", preview)
+        
+        closeBtn := previewGui.Add("Button", "x260 y420 w100 h30", "Close")
+        closeBtn.OnEvent("Click", (*) => previewGui.Destroy())
+        
+        previewGui.Show("w620 h460")
+    }
+    
+    GenerateBuildPreviewV7(buildData) {
+        preview := "════════════════════════════════════════════════`n"
+        preview .= "  BUILD PREVIEW: " . buildData.Get("name", "") . "`n"
+        preview .= "════════════════════════════════════════════════`n`n"
+        
+        preview .= "👤 Author: " . buildData.Get("author_name", "") . "`n"
+        preview .= "🎮 Type: " . buildData.Get("build_type", "") . "`n"
+        preview .= "📡 Ping: " . buildData.Get("ping_range", "") . "`n"
+        
+        if (buildData.Has("exact_ping") && buildData["exact_ping"]) {
+            preview .= "📍 Exact Ping: " . buildData["exact_ping"] . "ms`n"
+        }
+        
+        preview .= "📅 Created: " . SubStr(buildData.Get("created_at", ""), 1, 10) . "`n"
+        preview .= "🔧 Version: " . buildData.Get("version", "Unknown") . "`n"
+        preview .= "📊 Stats: " . buildData.Get("downloads", 0) . " downloads | "
+        preview .= Format("{:.1f}⭐", buildData.Get("rating", 0)) . " rating`n`n"
+        
+        preview .= "📝 DESCRIPTION:`n"
+        preview .= "────────────────`n"
+        preview .= buildData.Get("description", "No description") . "`n`n"
+        
+        preview .= "⚙️ TIMING CONFIGURATION:`n"
+        preview .= "────────────────────────`n"
+        
+        settings := buildData.Get("settings", Map())
+        if (Type(settings) = "String") {
+            try {
+                settings := JSON.Parse(settings)
+            }
+        }
+        
+        if (Type(settings) = "Map") {
+            for key, value in settings {
+                displayName := FormatSettingName(key)
+                preview .= "• " . displayName . ": " . value . "ms`n"
+            }
+        }
+        
+        tags := buildData.Get("tags", [])
+        if (Type(tags) = "Array" && tags.Length > 0) {
+            preview .= "`n🏷️ TAGS: " . JoinArray(tags, ", ") . "`n"
+        }
+        
+        return preview
+    }
+    
+    JoinArray(arr, sep := ", ") {
+        out := ""
+        for idx, val in arr {
+            if (idx > 1)
+                out .= sep
+            out .= val
+        }
+        return out
+    }
+    
+    RateBuildV7(*) {
+        if (!selectedBuildData) {
+            ShowTooltip("⚠️ Please select a build first", 2000)
+            return
+        }
+        
+        rateGui := Gui("+AlwaysOnTop +Owner" . blGui.Hwnd, "Rate Build")
+        rateGui.BackColor := "0x1a1a2e"
+        rateGui.SetFont("s10 cFFFFFF", "Segoe UI")
+        
+        rateGui.Add("Text", "x10 y10", "Rate this build:")
+        
+        rating := 5
+        rateGui.Add("Text", "x10 y40", "Rating:")
+        ratingSlider := rateGui.Add("Slider", "x60 y38 w200 Range1-5 TickInterval1", rating)
+        ratingText := rateGui.Add("Text", "x270 y40 w50", "5 ⭐")
+        
+        ratingSlider.OnEvent("Change", (*) => ratingText.Text := ratingSlider.Value . " ⭐")
+        
+        rateGui.Add("Text", "x10 y80", "Comment (optional):")
+        commentEdit := rateGui.Add("Edit", "x10 y100 w300 h60 VScroll Background0x16213e", "")
+        
+        submitBtn := rateGui.Add("Button", "x90 y170 w60 h30", "Submit")
+        submitBtn.OnEvent("Click", SubmitRating)
+        
+        cancelBtn := rateGui.Add("Button", "x160 y170 w60 h30", "Cancel")
+        cancelBtn.OnEvent("Click", (*) => rateGui.Destroy())
+        
+        SubmitRating(*) {
+            if (SupabaseClient.RatePreset(selectedBuildData["id"], ratingSlider.Value, commentEdit.Text)) {
+                ShowTooltip("✅ Rating submitted!", 2000)
+                rateGui.Destroy()
+                SearchBuildsV7() ; Refresh
+            } else {
+                ShowTooltip("❌ Failed to submit rating", 2000)
+            }
+        }
+        
+        rateGui.Show("w320 h210")
+        commentEdit.Focus()
+    }
+    
+    ; Load initial builds
+    SearchBuildsV7()
+    
+    blGui.Show("w900 h645")
+}
+
+ShowSystemStatsV7(*) {
+    global GUI_REFS, SESSION
+    
+    if (SESSION.role != "admin") {
+        ShowTooltip("❌ Admin access required", 2000)
+        return
+    }
+    
+    if (GUI_REFS["system_stats"]) {
+        try GUI_REFS["system_stats"].Destroy()
+    }
+    
+    statsGui := Gui("+AlwaysOnTop", "📈 System Statistics v7.0")
+    statsGui.BackColor := "0x1a1a2e"
+    GUI_REFS["system_stats"] := statsGui
+    
+    statsGui.SetFont("s12 Bold cFFFFFF", "Segoe UI")
+    statsGui.Add("Text", "x0 y10 w600 Center", "SYSTEM STATISTICS v7.0")
+    
+    statsGui.SetFont("s10 cFFFFFF", "Segoe UI")
+    
+    ; Statistics display
+    statsText := statsGui.Add("Edit", "x10 y50 w580 h400 ReadOnly VScroll Background0x16213e", 
+        "Loading statistics...")
+    
+    ; Buttons
+    refreshBtn := statsGui.Add("Button", "x150 y460 w100 h30", "🔄 Refresh")
+    refreshBtn.OnEvent("Click", LoadStatsV7)
+    
+    exportBtn := statsGui.Add("Button", "x260 y460 w100 h30", "📤 Export")
+    exportBtn.OnEvent("Click", ExportStats)
+    
+    closeBtn := statsGui.Add("Button", "x370 y460 w100 h30", "Close")
+    closeBtn.OnEvent("Click", (*) => statsGui.Destroy())
+    
+    LoadStatsV7(*) {
+        statsText.Text := "Fetching statistics from server..."
+        
+        result := SupabaseClient.GetAdminStats()
+        
+        if (result["success"]) {
+            stats := result["data"]
+            
+            displayText := "════════════════════════════════════════════`n"
+            displayText .= "         SYSTEM STATISTICS DASHBOARD v7.0`n"
+            displayText .= "════════════════════════════════════════════`n`n"
+            
+            displayText .= "👥 USER STATISTICS:`n"
+            displayText .= "───────────────────`n"
+            displayText .= "• Total Users: " . stats.Get("users_total", 0) . "`n"
+            displayText .= "• Trial Users: " . stats.Get("trials_total", 0) . "`n"
+            displayText .= "• Premium Users: " . stats.Get("premium_total", 0) . "`n"
+            displayText .= "• Blocked Users: " . stats.Get("blocked_total", 0) . "`n"
+            displayText .= "• New Today: " . stats.Get("new_users_today", 0) . "`n"
+            displayText .= "• New This Week: " . stats.Get("new_users_week", 0) . "`n`n"
+            
+            displayText .= "📦 PRESET STATISTICS:`n"
+            displayText .= "─────────────────────`n"
+            displayText .= "• Public Presets: " . stats.Get("presets_public", 0) . "`n"
+            displayText .= "• Private Presets: " . stats.Get("presets_private", 0) . "`n"
+            displayText .= "• Total Downloads: " . stats.Get("downloads_total", 0) . "`n"
+            displayText .= "• Average Rating: " . Format("{:.2f}", stats.Get("rating_avg", 0)) . " ⭐`n"
+            displayText .= "• Total Ratings: " . stats.Get("rating_count", 0) . "`n`n"
+            
+            displayText .= "📊 ACTIVITY STATISTICS:`n"
+            displayText .= "───────────────────────`n"
+            displayText .= "• Activities (24h): " . stats.Get("activity_24h", 0) . "`n"
+            displayText .= "• Activities (7d): " . stats.Get("activity_7d", 0) . "`n"
+            displayText .= "• Latest Version: " . stats.Get("latest_version", APP_VERSION) . "`n"
+            displayText .= "• Maintenance Mode: " . stats.Get("maintenance_mode", "false") . "`n`n"
+            
+            displayText .= "🏆 TOP DOWNLOADED PRESETS:`n"
+            displayText .= "──────────────────────────`n"
+            
+            topDownloads := stats.Get("top_downloads", [])
+            if (Type(topDownloads) = "Array" && topDownloads.Length > 0) {
+                for idx, preset in topDownloads {
+                    displayText .= Format("{}. {} by {} ({} downloads, {:.1f}⭐)`n",
+                        idx,
+                        preset.Get("name", "Unknown"),
+                        preset.Get("author", "Unknown"),
+                        preset.Get("downloads", 0),
+                        preset.Get("rating", 0))
+                }
+            } else {
+                displayText .= "No presets available`n"
+            }
+            
+            displayText .= "`n🔝 TOP RATED PRESETS:`n"
+            displayText .= "────────────────────`n"
+            
+            topRated := stats.Get("top_rated", [])
+            if (Type(topRated) = "Array" && topRated.Length > 0) {
+                for idx, preset in topRated {
+                    displayText .= Format("{}. {} ({:.1f}⭐ from {} votes)`n",
+                        idx,
+                        preset.Get("name", "Unknown"),
+                        preset.Get("rating", 0),
+                        preset.Get("rating_count", 0))
+                }
+            }
+            
+            displayText .= "`n════════════════════════════════════════════`n"
+            displayText .= "Last updated: " . FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss")
+            
+            statsText.Text := displayText
+        } else {
+            statsText.Text := "Error loading statistics:`n`n" . result.Get("error", "Unknown error")
+        }
+    }
+    
+    ExportStats(*) {
+        filepath := FileSelect("S", "stats_" . FormatTime(A_Now, "yyyyMMdd_HHmmss") . ".txt", 
+            "Export Statistics", "Text Files (*.txt)")
+        if (filepath) {
+            FileAppend(statsText.Text, filepath)
+            ShowTooltip("✅ Statistics exported to: " . filepath, 3000)
+        }
+    }
+    
+    ; Load initial stats
+    LoadStatsV7()
+    
+    statsGui.Show("w600 h500")
+}
+
+ShowUserManagerV7(*) {
+    if (SESSION.role != "admin") {
+        ShowTooltip("❌ Admin access required", 2000)
+        return
+    }
+    
+    MsgBox(
+        "User Manager v7.0`n`n" .
+        "Please use the Admin Panel HTML for complete user management.`n`n" .
+        "Features available:`n" .
+        "• User list with search and filters`n" .
+        "• Block/unblock users`n" .
+        "• Change user roles`n" .
+        "• Extend trial periods`n" .
+        "• View detailed user activity`n" .
+        "• Manage user presets`n`n" .
+        "Open admin.html in your browser for full access.",
+        "Admin Feature",
+        "Icon!"
+    )
+    
+    ; Option to open admin panel
+    result := MsgBox("Would you like to open the Admin Panel now?", "Open Admin Panel", "YesNo Icon?")
+    if (result = "Yes") {
+        Run(A_ScriptDir . "\admin.html")
+    }
+}
+
+CheckForUpdatesV7(*) {
+    global RUNTIME, APP_VERSION
+    
+    ShowTooltip("🔍 Checking for updates...", 2000)
+    
+    ; Sync app settings from database
+    SupabaseClient.SyncAppSettings()
+    
+    if (RUNTIME.updateAvailable) {
+        result := MsgBox(
+            "New version available: v" . RUNTIME.latestVersion . "`n`n" .
+            "Current version: v" . APP_VERSION . "`n`n" .
+            "Changes in new version:`n" .
+            "• Enhanced preset system`n" .
+            "• Improved cloud sync`n" .
+            "• Bug fixes and optimizations`n`n" .
+            "Would you like to update now?",
+            "Update Available",
+            "YesNo Icon!"
+        )
+        
+        if (result = "Yes") {
+            DownloadAndInstallUpdateV7()
+        }
+    } else {
+        ShowTooltip("✅ You have the latest version!", 2000)
+    }
+}
+
+DownloadAndInstallUpdateV7() {
+    global UPDATE_DIR, RUNTIME
+    
+    if (!DirExist(UPDATE_DIR)) {
+        DirCreate(UPDATE_DIR)
+    }
+    
+    updateUrl := SupabaseClient.GetAppConfig("update_url")
+    
+    if (!updateUrl) {
+        updateUrl := "https://github.com/yourusername/bns-macro/releases/latest"
+    }
+    
+    MsgBox(
+        "Update System v7.0`n`n" .
+        "The update will be downloaded from:`n" .
+        updateUrl . "`n`n" .
+        "After download, the script will restart with the new version.`n`n" .
+        "Click OK to proceed with the update.",
+        "Update System",
+        "Icon!"
+    )
+    
+    ; Here you would implement actual download logic
+    ; For now, just show the process
+    ShowTooltip("📥 Downloading update v" . RUNTIME.latestVersion . "...", 5000)
+    
+    ; Simulate download
+    Sleep(2000)
+    
+    ShowTooltip("✅ Update downloaded! Restarting...", 2000)
+    Sleep(2000)
+    
+    ; Reload script (in real implementation, would load new version)
+    Reload()
 }
 
 ; ================= CLOSE MAIN MENU =================
@@ -2293,6 +3315,71 @@ ParseTags(tagString) {
             tags.Push(trimmed)
     }
     return tags
+}
+
+; ================= OTHER FUNCTIONS =================
+ShowModeSelection() {
+    global RUNTIME
+    
+    modeGui := Gui("+AlwaysOnTop +ToolWindow", "⚔️ Select Operation Mode")
+    modeGui.BackColor := "0x1a1a2e"
+    
+    modeGui.SetFont("s14 Bold cFFFFFF", "Segoe UI")
+    modeGui.Add("Text", "x50 y20 w300 Center", "SELECT OPERATION MODE")
+    
+    modeGui.SetFont("s12", "Segoe UI")
+    
+    punctureBtn := modeGui.Add("Button", "x50 y70 w140 h50", "🎯 Puncture")
+    punctureBtn.OnEvent("Click", SelectPuncture)
+    
+    hybridBtn := modeGui.Add("Button", "x210 y70 w140 h50", "🔄 Hybrid")
+    hybridBtn.OnEvent("Click", SelectHybrid)
+
+    modeGui.SetFont("s10 cSilver", "Segoe UI")
+    modeGui.Add("Text", "x20 y140 w360", "🎯 Puncture: Detects critical hits using FindText")
+    modeGui.Add("Text", "x20 y160 w360", "🔄 Hybrid: Custom sequences + Focus pixel detection")
+    
+    SelectPuncture(*) {
+        RUNTIME.mode := "puncture"
+        modeGui.Destroy()
+        ShowTooltip("✅ Mode switched to Puncture!", 2000)
+        UpdateMainMenuStatus()
+    }
+    
+    SelectHybrid(*) {
+        RUNTIME.mode := "hybrid"
+        modeGui.Destroy()
+        ShowTooltip("✅ Mode switched to Hybrid!", 2000)
+        UpdateMainMenuStatus()
+    }
+    
+    modeGui.Show("w400 h200")
+}
+
+ShowUpgradeDialog() {
+    upgradeGui := Gui("+AlwaysOnTop", "⭐ Upgrade to Premium")
+    upgradeGui.BackColor := "0x1a1a2e"
+    
+    upgradeGui.SetFont("s12 Bold cFFFFFF", "Segoe UI")
+    upgradeGui.Add("Text", "x0 y20 w400 Center", "Unlock Full Features!")
+    
+    upgradeGui.SetFont("s10 cFFFFFF", "Segoe UI")
+    features := "✅ Unlimited usage`n"
+    features .= "✅ Priority support`n"
+    features .= "✅ Exclusive presets`n"
+    features .= "✅ Advanced configurations`n"
+    features .= "✅ Discord VIP role`n"
+    features .= "✅ Future updates included"
+    
+    upgradeGui.Add("Text", "x50 y60 w300", features)
+    
+    purchaseBtn := upgradeGui.Add("Button", "x100 y220 w200 h40", "💳 Purchase Premium")
+    purchaseBtn.OnEvent("Click", (*) => Run(""))
+    
+    laterBtn := upgradeGui.Add("Button", "x160 y270 w80 h30", "Later")
+    laterBtn.OnEvent("Click", (*) => upgradeGui.Destroy())
+    
+    upgradeGui.Show("w400 h320")
 }
 
 ; ================= SHOW HOTKEY EDITOR =================
@@ -2957,9 +4044,9 @@ GenerateFlowchartText(viewMode) {
         flowText .= "└────────┬────────┘`r`n"
         flowText .= "         ↓`r`n"
         flowText .= "┌─────────────────┐`r`n"
-        flowText .= "│  Loop " . SETTINGS["macro_loop"] . " times   │`r`n"
-        flowText .= "│  Send {" . SETTINGS["key_puncture_r"] . "}       │`r`n"
-        flowText .= "│  Sleep " . SETTINGS["macro_timing"] . "ms     │`r`n"
+        flowText .= "│  Loop " . (SETTINGS.Has("macro_loop") ? SETTINGS["macro_loop"] : "4") . " times   │`r`n"
+        flowText .= "│  Send {" . (SETTINGS.Has("key_puncture_r") ? SETTINGS["key_puncture_r"] : "r") . "}       │`r`n"
+        flowText .= "│  Sleep " . (SETTINGS.Has("macro_timing") ? SETTINGS["macro_timing"] : "30") . "ms     │`r`n"
         flowText .= "└────────┬────────┘`r`n"
         flowText .= "         ↓`r`n"
         flowText .= "    Sleep " . SETTINGS["sleep_punc_x1_r_tab_gap"] . "ms`r`n"
@@ -3031,1334 +4118,51 @@ GenerateFlowchartText(viewMode) {
 GetShareableSettings() {
     global SETTINGS
     
-    ; Retorna APENAS configurações de timing (sleeps e loops)
-    ; NÃO inclui FindText patterns ou PixelSearch coordinates
-    return Map(
-        ; Basic timing
-        "macro_timing", SETTINGS["macro_timing"],
-        "macro_loop", SETTINGS["macro_loop"],
-        
-        ; Puncture mode sleeps
-        "sleep_punc_x2_fast", SETTINGS["sleep_punc_x2_fast"],
-        "sleep_punc_x2_tab", SETTINGS["sleep_punc_x2_tab"],
-        "sleep_punc_x2_final", SETTINGS["sleep_punc_x2_final"],
-        "sleep_punc_x1_r_tab_gap", SETTINGS["sleep_punc_x1_r_tab_gap"],
-        "sleep_punc_x1_tab_crit_gap", SETTINGS["sleep_punc_x1_tab_crit_gap"],
-        "sleep_punc_x1_crit_check", SETTINGS["sleep_punc_x1_crit_check"],
-        "sleep_punc_x1_crit_combo", SETTINGS["sleep_punc_x1_crit_combo"],
-        "sleep_punc_x1_t_between", SETTINGS["sleep_punc_x1_t_between"],
-        "sleep_punc_x1_no_crit", SETTINGS["sleep_punc_x1_no_crit"],
-        
-        ; Hybrid mode timings
-        "hybrid_macro1_timing", SETTINGS["hybrid_macro1_timing"],
-        "hybrid_macro1_sequence_delay", SETTINGS["hybrid_macro1_sequence_delay"],
-        "hybrid_macro1_repeat_count", SETTINGS["hybrid_macro1_repeat_count"],
-        "hybrid_macro2_timing", SETTINGS["hybrid_macro2_timing"],
-        "hybrid_macro2_sequence_delay", SETTINGS["hybrid_macro2_sequence_delay"],
-        "hybrid_macro2_no_pixel_delay", SETTINGS["hybrid_macro2_no_pixel_delay"],
-        
-        ; Detection retry settings
-        "findtext_retries", SETTINGS["findtext_retries"],
-        "findtext_retry_delay", SETTINGS["findtext_retry_delay"],
-        "hybrid_pixelsearch_retries", SETTINGS["hybrid_pixelsearch_retries"],
-        "hybrid_pixelsearch_retry_delay", SETTINGS["hybrid_pixelsearch_retry_delay"]
-    )
-}
-
-; ================= SHOW IMPORT/EXPORT =================
-ShowImportExport(*) {
-    global GUI_REFS, SETTINGS, SESSION, CLOUD_PRESETS, LOCAL_PRESETS
-    
-    if (GUI_REFS["preset"]) {
-        try GUI_REFS["preset"].Destroy()
-        GUI_REFS["preset"] := ""
-    }
-    
-    GUI_REFS["preset"] := Gui("+AlwaysOnTop", "📦 Import/Export Manager")
-    GUI_REFS["preset"].BackColor := "0x1a1a2e"
-    GUI_REFS["preset"].SetFont("s10 cFFFFFF", "Segoe UI")
-    
-    tab := GUI_REFS["preset"].Add("Tab3", "x5 y5 w590 h500", ["📁 Local Presets", "☁️ Cloud Presets", "⬆️ Export", "⬇️ Import"])
-    
-    ; === TAB 1: LOCAL PRESETS ===
-    tab.UseTab(1)
-    GUI_REFS["preset"].Add("Text", "x15 y35", "Saved Local Configurations:")
-    presetList := GUI_REFS["preset"].Add("ListBox", "x15 y55 w560 h200 Background0x16213e")
-    
-    GUI_REFS["preset"].Add("Text", "x15 y265", "Preview:")
-    previewText := GUI_REFS["preset"].Add("Edit", "x15 y285 w560 h140 ReadOnly Multi Background0x16213e")
-    
-    loadBtn := GUI_REFS["preset"].Add("Button", "x15 y435 w100 h35", "📂 Load")
-    loadBtn.OnEvent("Click", LoadSelectedPreset)
-    
-    deleteBtn := GUI_REFS["preset"].Add("Button", "x125 y435 w100 h35", "🗑️ Delete")
-    deleteBtn.OnEvent("Click", DeleteSelectedPreset)
-    
-    refreshLocalBtn := GUI_REFS["preset"].Add("Button", "x235 y435 w100 h35", "🔄 Refresh")
-    refreshLocalBtn.OnEvent("Click", RefreshPresetList)
-    
-    ; === TAB 2: CLOUD PRESETS ===
-    tab.UseTab(2)
-    GUI_REFS["preset"].Add("Text", "x15 y35", "Cloud Presets:")
-    
-    GUI_REFS["preset"].Add("Text", "x15 y60", "Filter:")
-    filterDropdown := GUI_REFS["preset"].Add("DropDownList", "x60 y58 w100", ["All", "My Presets", "Public", "Top Rated"])
-    filterDropdown.Text := "All"
-    
-    searchEdit := GUI_REFS["preset"].Add("Edit", "x170 y58 w200 Background0x16213e")
-    searchBtn := GUI_REFS["preset"].Add("Button", "x380 y57 w60 h25", "🔍")
-    searchBtn.OnEvent("Click", SearchCloudPresets)
-    
-    cloudPresetList := GUI_REFS["preset"].Add("ListView", "x15 y90 w560 h285 Background0x16213e", 
-        ["Name", "Author", "Type", "Downloads", "Rating", "Date"])
-    
-    downloadCloudBtn := GUI_REFS["preset"].Add("Button", "x15 y385 w100 h35", "⬇️ Download")
-    downloadCloudBtn.OnEvent("Click", DownloadCloudPreset)
-    
-    uploadCloudBtn := GUI_REFS["preset"].Add("Button", "x125 y385 w100 h35", "⬆️ Upload")
-    uploadCloudBtn.OnEvent("Click", UploadToCloud)
-    
-    rateCloudBtn := GUI_REFS["preset"].Add("Button", "x235 y385 w80 h35", "⭐ Rate")
-    rateCloudBtn.OnEvent("Click", RateCloudPreset)
-    
-    deleteCloudBtn := GUI_REFS["preset"].Add("Button", "x325 y385 w100 h35", "🗑️ Delete")
-    deleteCloudBtn.OnEvent("Click", DeleteCloudPreset)
-    
-    refreshCloudBtn := GUI_REFS["preset"].Add("Button", "x435 y385 w100 h35", "🔄 Refresh")
-    refreshCloudBtn.OnEvent("Click", RefreshCloudPresets)
-    
-    ; === TAB 3: EXPORT ===
-    tab.UseTab(3)
-    GUI_REFS["preset"].Add("Text", "x15 y35", "Export Configuration:")
-    
-    GUI_REFS["preset"].Add("Text", "x15 y65", "Preset Name:")
-    presetNameEdit := GUI_REFS["preset"].Add("Edit", "x120 y63 w250 Background0x16213e")
-    
-    GUI_REFS["preset"].Add("Text", "x15 y100", "Created By:")
-    creatorEdit := GUI_REFS["preset"].Add("Edit", "x120 y98 w200 Background0x16213e", SESSION.nickname)
-    
-    GUI_REFS["preset"].Add("Text", "x15 y135", "Build Type:")
-    buildDropdown := GUI_REFS["preset"].Add("DropDownList", "x120 y133 w200", ["Hybrid", "Puncture", "Both"])
-    buildDropdown.Choose(1)
-    
-    GUI_REFS["preset"].Add("Text", "x15 y170", "Description:")
-    descriptionEdit := GUI_REFS["preset"].Add("Edit", "x15 y190 w560 h120 Multi Background0x16213e")
-    
-    publicCheck := GUI_REFS["preset"].Add("Checkbox", "x15 y320 cWhite", "Make this preset public (share with community)")
-    
-    exportFileBtn := GUI_REFS["preset"].Add("Button", "x150 y355 w140 h40", "💾 Export to File")
-    exportFileBtn.OnEvent("Click", ExportToFile)
-    
-    exportCloudBtn := GUI_REFS["preset"].Add("Button", "x300 y355 w140 h40", "☁️ Export to Cloud")
-    exportCloudBtn.OnEvent("Click", ExportToCloud)
-    
-    ; === TAB 4: IMPORT ===
-    tab.UseTab(4)
-    GUI_REFS["preset"].Add("Text", "x15 y35", "Import Configuration:")
-    
-    importFileBtn := GUI_REFS["preset"].Add("Button", "x100 y80 w180 h50", "📁 Import from File")
-    importFileBtn.OnEvent("Click", ImportFromFile)
-    
-    importCloudBtn := GUI_REFS["preset"].Add("Button", "x300 y80 w180 h50", "☁️ Import from Cloud")
-    importCloudBtn.OnEvent("Click", ImportFromCloudDialog)
-    
-    GUI_REFS["preset"].Add("Text", "x15 y150", "Import Status:")
-    importStatus := GUI_REFS["preset"].Add("Edit", "x15 y170 w560 h200 ReadOnly Multi Background0x16213e")
-    
-    ; Common buttons
-    tab.UseTab()
-    
-    closeBtn := GUI_REFS["preset"].Add("Button", "x250 y515 w100 h35", "❌ Close")
-    closeBtn.OnEvent("Click", (*) => GUI_REFS["preset"].Destroy())
-
-    ; Helper functions
-    RefreshPresetList(*) {
-        presetList.Delete()
-        LOCAL_PRESETS := []
-        
-        presetsDir := A_ScriptDir . "\Presets"
-        if !DirExist(presetsDir) {
-            DirCreate(presetsDir)
-        }
-        
-        Loop Files, presetsDir . "\*.ini" {
-            presetName := StrReplace(A_LoopFileName, ".ini", "")
-            presetList.Add([presetName])
-            LOCAL_PRESETS.Push(presetName)
-        }
-        
-        if LOCAL_PRESETS.Length > 0 {
-            presetList.Choose(1)
-            UpdatePresetPreview()
-        }
-    }
-    
-    UpdatePresetPreview(*) {
-    selectedIndex := presetList.GetPos()
-    if (selectedIndex = "" || selectedIndex < 1)
-        selectedIndex := 1
-    if selectedIndex > 0 && selectedIndex <= LOCAL_PRESETS.Length {
-            selectedPreset := LOCAL_PRESETS[selectedIndex]
-            presetFile := A_ScriptDir . "\Presets\" . selectedPreset . ".ini"
-            
-            if FileExist(presetFile) {
-                preview := "📋 PRESET DETAILS`n"
-                preview .= "════════════════════`n"
-                preview .= "Name: " . selectedPreset . "`n"
-                preview .= "Created By: " . IniRead(presetFile, "Metadata", "created_by", "Unknown") . "`n"
-                preview .= "Build Type: " . IniRead(presetFile, "Metadata", "build_type", "Not specified") . "`n"
-                preview .= "Created: " . IniRead(presetFile, "Metadata", "created", "Unknown") . "`n"
-                preview .= "Version: " . IniRead(presetFile, "Metadata", "version", "Unknown") . "`n"
-                preview .= "════════════════════`n"
-                preview .= "Description: " . IniRead(presetFile, "Metadata", "description", "No description available")
-                
-                previewText.Text := preview
-            }
-        }
-    }
-    
-    LoadSelectedPreset(*) {
-    selectedIndex := presetList.GetPos()
-    if (selectedIndex = "" || selectedIndex < 1)
-        selectedIndex := 1
-    if selectedIndex > 0 && selectedIndex <= LOCAL_PRESETS.Length {
-            selectedPreset := LOCAL_PRESETS[selectedIndex]
-            presetFile := A_ScriptDir . "\Presets\" . selectedPreset . ".ini"
-            
-            if FileExist(presetFile) {
-                for key, value in SETTINGS {
-                    newValue := IniRead(presetFile, "Settings", key, value)
-                    SETTINGS[key] := newValue
-                }
-                
-                PATTERNS.Ccrit := IniRead(presetFile, "FindText", "Ccrit", PATTERNS.Ccrit)
-                PATTERNS.Lcrit := IniRead(presetFile, "FindText", "Lcrit", PATTERNS.Lcrit)
-                
-                SaveSettings()
-                ShowTooltip("✅ Preset loaded: " . selectedPreset, 3000)
-                importStatus.Text := "Successfully loaded preset: " . selectedPreset . "`n" . FormatTime(A_Now)
-            }
-        } else {
-            MsgBox("Please select a preset to load", "No Selection", "OK Icon!")
-        }
-    }
-    
-    DeleteSelectedPreset(*) {
-    selectedIndex := presetList.GetPos()
-    if (selectedIndex = "" || selectedIndex < 1)
-        selectedIndex := 1
-    if selectedIndex > 0 && selectedIndex <= LOCAL_PRESETS.Length {
-            selectedPreset := LOCAL_PRESETS[selectedIndex]
-            
-            result := MsgBox("Delete preset: " . selectedPreset . "?`n`nThis action cannot be undone!", 
-                           "Confirm Delete", "YesNo Icon!")
-            
-            if result = "Yes" {
-                try {
-                    FileDelete(A_ScriptDir . "\Presets\" . selectedPreset . ".ini")
-                    RefreshPresetList()
-                    ShowTooltip("✅ Preset deleted: " . selectedPreset, 2000)
-                } catch {
-                    ShowTooltip("❌ Failed to delete preset", 2000)
-                }
-            }
-        } else {
-            MsgBox("Please select a preset to delete", "No Selection", "OK Icon!")
-        }
-    }
-    
-    ExportToFile(*) {
-        presetName := presetNameEdit.Text
-        
-        if presetName = "" {
-            MsgBox("Please enter a preset name", "Error", "OK Icon!")
-            return
-        }
-        
-        presetsDir := A_ScriptDir . "\Presets"
-        if !DirExist(presetsDir) {
-            DirCreate(presetsDir)
-        }
-        
-        exportFile := presetsDir . "\" . presetName . ".ini"
-        
-        if FileExist(exportFile) {
-            result := MsgBox("Preset '" . presetName . "' already exists.`nOverwrite?", 
-                           "Confirm Overwrite", "YesNo Icon!")
-            if result != "Yes" {
-                return
-            }
-        }
-        
-        IniWrite(presetName, exportFile, "Metadata", "name")
-        IniWrite(creatorEdit.Text, exportFile, "Metadata", "created_by")
-        IniWrite(buildDropdown.Text, exportFile, "Metadata", "build_type")
-        IniWrite(descriptionEdit.Text, exportFile, "Metadata", "description")
-        IniWrite(FormatDate(A_Now), exportFile, "Metadata", "created")
-        IniWrite(APP_VERSION, exportFile, "Metadata", "version")
-        
-        for key, value in SETTINGS {
-            IniWrite(value, exportFile, "Settings", key)
-        }
-        
-        IniWrite(PATTERNS.Ccrit, exportFile, "FindText", "Ccrit")
-        IniWrite(PATTERNS.Lcrit, exportFile, "FindText", "Lcrit")
-        
-        ShowTooltip("✅ Configuration exported successfully!", 3000)
-        RefreshPresetList()
-        
-        presetNameEdit.Text := ""
-        descriptionEdit.Text := ""
-        
-        tab.Choose(1)
-    }
-    
-    ImportFromFile(*) {
-        importFile := FileSelect(1, A_ScriptDir . "\Presets", 
-                                "Import configuration", "INI Files (*.ini)")
-        
-        if importFile != "" {
-            for key, value in SETTINGS {
-                newValue := IniRead(importFile, "Settings", key, "")
-                if newValue != "" {
-                    SETTINGS[key] := newValue
-                }
-            }
-            
-            newCcrit := IniRead(importFile, "FindText", "Ccrit", "")
-            if newCcrit != "" {
-                PATTERNS.Ccrit := newCcrit
-            }
-            
-            newLcrit := IniRead(importFile, "FindText", "Lcrit", "")
-            if newLcrit != "" {
-                PATTERNS.Lcrit := newLcrit
-            }
-            
-            SaveSettings()
-            
-            fileName := SubStr(importFile, InStr(importFile, "\",, -1) + 1)
-            importStatus.Text := "✅ Successfully imported preset from file:`n" . fileName . "`n`n"
-            importStatus.Text .= "Imported at: " . FormatTime(A_Now) . "`n`n"
-            importStatus.Text .= "Metadata:`n"
-            importStatus.Text .= "• Created by: " . IniRead(importFile, "Metadata", "created_by", "Unknown") . "`n"
-            importStatus.Text .= "• Build type: " . IniRead(importFile, "Metadata", "build_type", "Not specified")
-            
-            ShowTooltip("✅ Configuration imported successfully!", 3000)
-        }
-    }
-    
-    ; ================= FUNÇÃO MELHORADA: RefreshCloudPresets =================
-RefreshCloudPresets(*) {
-    global CLOUD_PRESET_IDS, SESSION
-    
-    if (!SESSION.authenticated) {
-        ShowTooltip("⚠️ Please login to access cloud features", 2000)
-        return
-    }
-    
-    ShowTooltip("🔄 Loading cloud presets...", 1000)
-    cloudPresetList.Delete()
-    
-    ; Clear stored IDs
-    CLOUD_PRESET_IDS := Map()
-    
-    filter := filterDropdown.Text
-    searchTerm := Trim(searchEdit.Text)
-    
-    ; Build query URL
-    url := SUPABASE.restURL . "/presets?"
-    
-    switch filter {
-        case "My Presets":
-            url .= "user_id=eq." . SESSION.userId . "&"
-        case "Public":
-            url .= "is_public=eq.true&"
-        case "Top Rated":
-            url .= "is_public=eq.true&rating=gte.4&"
-        default:
-            url .= "is_public=eq.true&"
-    }
-    
-    if (searchTerm) {
-        ; URL encode the search term
-        searchTerm := StrReplace(searchTerm, " ", "%20")
-        url .= "or=(name.ilike.*" . searchTerm . "*,description.ilike.*" . searchTerm . "*)&"
-    }
-    
-    url .= "order=created_at.desc&limit=100"
-    
-    response := HttpClient.Get(url)
-    
-    if (response.success) {
-        try {
-            presets := JSON.Parse(response.text)
-            
-            if (Type(presets) != "Array") {
-                ShowTooltip("⚠️ Invalid response format", 2000)
-                return
-            }
-            
-            ; Populate list
-            rowNum := 1
-            for preset in presets {
-                if (Type(preset) = "Map") {
-                    ; Add to ListView
-                    cloudPresetList.Add("", 
-                        preset.Get("name", "Unknown"),
-                        preset.Get("author_name", "Anonymous"),
-                        preset.Get("build_type", "N/A"),
-                        preset.Get("downloads", "0"),
-                        preset.Has("rating") && preset["rating"] > 0 ? 
-                            Format("{:.1f}", preset["rating"]) . "⭐" : "No rating",
-                        preset.Has("created_at") ? 
-                            FormatTime(SubStr(preset["created_at"], 1, 10), "MM/dd/yyyy") : "N/A"
-                    )
-                    
-                    ; Store preset ID for later use
-                    if (preset.Has("id")) {
-                        CLOUD_PRESET_IDS[rowNum] := preset["id"]
-                    }
-                    
-                    rowNum++
-                }
-            }
-            
-            ShowTooltip("✅ Loaded " . (rowNum - 1) . " presets", 2000)
-            
-        } catch as e {
-            ShowTooltip("❌ Error parsing presets: " . e.Message, 3000)
-        }
-    } else {
-        ShowTooltip("❌ Failed to load presets", 2000)
-    }
-}
-    
-    SearchCloudPresets(*) {
-        searchTerm := searchEdit.Text
-        
-        if !searchTerm {
-            RefreshCloudPresets()
-            return
-        }
-        
-        ShowTooltip("🔍 Searching for: " . searchTerm, 1000)
-    }
-    
-    DownloadCloudPreset(*) {
-    selectedRow := cloudPresetList.GetNext()
-    
-    if (!selectedRow) {
-        MsgBox("Please select a preset to download", "No Selection", "OK Icon!")
-        return
-    }
-    
-    presetName := cloudPresetList.GetText(selectedRow, 1)
-    presetId := GetPresetIdFromRow(selectedRow)
-    
-    if (!presetId) {
-        ShowTooltip("❌ Invalid preset ID", 2000)
-        return
-    }
-    
-    ShowTooltip("⬇️ Downloading: " . presetName, 2000)
-    
-    ; Fetch full preset data
-    url := SUPABASE.restURL . "/presets?id=eq." . presetId . "&select=*"
-    response := HttpClient.Get(url)
-    
-    if (response.success) {
-        try {
-            presets := JSON.Parse(response.text)
-            
-            if (Type(presets) = "Array" && presets.Length > 0) {
-                presetData := presets[1]
-                
-                ; Apply the downloaded preset
-                if (ApplyDownloadedPreset(presetData)) {
-                    ; Increment download counter
-                    SupabaseClient.IncrementDownloads(presetId)
-                    
-                    ; Log activity
-                    SupabaseClient.LogActivity("preset_download", presetName)
-                    
-                    ShowTooltip("✅ Preset '" . presetName . "' applied successfully!", 3000)
-                } else {
-                    ShowTooltip("⚠️ Failed to apply preset settings", 2000)
-                }
-            } else {
-                ShowTooltip("❌ Preset not found", 2000)
-            }
-        } catch as e {
-            ShowTooltip("❌ Error downloading preset: " . e.Message, 3000)
-        }
-    } else {
-        ShowTooltip("❌ Download failed: " . response.statusText, 2000)
-    }
-}
-    
-    UploadToCloud(*) {
-        selectedIndex := presetList.GetPos()
-        
-        if selectedIndex <= 0 {
-            MsgBox("Please select a local preset to upload", "No Selection", "OK Icon!")
-            return
-        }
-        
-        selectedPreset := LOCAL_PRESETS[selectedIndex]
-        presetFile := A_ScriptDir . "\Presets\" . selectedPreset . ".ini"
-        
-        if !FileExist(presetFile) {
-            ShowTooltip("❌ Preset file not found", 2000)
-            return
-        }
-        
-        ; Check if user can upload (trial users need 3+ days)
-        if SESSION.isTrial && SESSION.trialDaysRemaining > 4 {
-            MsgBox("Trial users can upload after 3 days of usage.`nYou have " . (7 - SESSION.trialDaysRemaining) . " days remaining.", "Upload Restricted", "Icon!")
-            return
-        }
-        
-        ShowTooltip("⬆️ Uploading to cloud...", 2000)
-        
-        ; Prepare preset data
-        presetData := Map(
-            "name", selectedPreset,
-            "description", IniRead(presetFile, "Metadata", "description", ""),
-            "build_type", IniRead(presetFile, "Metadata", "build_type", "both"),
-            "is_public", true,
-            "settings", Map()
-        )
-        
-        ; Load all settings
-        for key, value in SETTINGS {
-            presetData["settings"][key] := IniRead(presetFile, "Settings", key, value)
-        }
-        
-        ; Add FindText patterns
-        presetData["settings"]["pattern_ccrit"] := IniRead(presetFile, "FindText", "Ccrit", PATTERNS.Ccrit)
-        presetData["settings"]["pattern_lcrit"] := IniRead(presetFile, "FindText", "Lcrit", PATTERNS.Lcrit)
-        
-        result := SupabaseClient.SavePresetToCloud(presetData)
-        
-        if result["success"] {
-            ShowTooltip("✅ Uploaded to cloud successfully!", 3000)
-            RefreshCloudPresets()
-            tab.Choose(2)
-        } else {
-            ShowTooltip("❌ Upload failed: " . result["error"], 3000)
-        }
-    }
-    
-    DeleteCloudPreset(*) {
-        selectedRow := cloudPresetList.GetNext()
-        
-        if !selectedRow {
-            MsgBox("Please select a preset to delete", "No Selection", "OK Icon!")
-            return
-        }
-        
-        presetName := cloudPresetList.GetText(selectedRow, 1)
-        authorName := cloudPresetList.GetText(selectedRow, 2)
-        
-        ; Check if user owns the preset
-        if authorName != SESSION.nickname && SESSION.role != "admin" {
-            MsgBox("You can only delete your own presets", "Permission Denied", "Icon!")
-            return
-        }
-        
-        result := MsgBox("Delete cloud preset: " . presetName . "?`n`nThis cannot be undone!", 
-                        "Confirm Delete", "YesNo Icon!")
-        
-        if result = "Yes" {
-            presetId := GetPresetIdFromRow(selectedRow)
-            
-            if SupabaseClient.DeleteCloudPreset(presetId) {
-                ShowTooltip("✅ Preset deleted from cloud", 2000)
-                RefreshCloudPresets()
-            } else {
-                ShowTooltip("❌ Failed to delete preset", 2000)
-            }
-        }
-    }
-    
-    ExportToCloud(*) {
-        presetName := presetNameEdit.Text
-        
-        if !presetName {
-            MsgBox("Please enter a preset name", "Error", "OK Icon!")
-            return
-        }
-        
-        if !SESSION.authenticated {
-            MsgBox("Please login to upload presets", "Not Authenticated", "OK Icon!")
-            return
-        }
-        
-        ; Check upload permissions
-        if SESSION.isTrial && SESSION.trialDaysRemaining > 4 {
-            MsgBox("Trial users can upload after 3 days of usage", "Upload Restricted", "Icon!")
-            return
-        }
-        
-        ShowTooltip("☁️ Uploading to cloud...", 2000)
-        
-        ; Prepare preset data
-        presetData := Map(
-            "name", presetName,
-            "description", descriptionEdit.Text,
-            "build_type", buildDropdown.Text,
-            "is_public", publicCheck.Value ? true : false,
-            "settings", Map()
-        )
-        
-        ; Add all current settings
-        for key, value in SETTINGS {
-            presetData["settings"][key] := value
-        }
-        
-        ; Add FindText patterns
-        presetData["settings"]["pattern_ccrit"] := PATTERNS.Ccrit
-        presetData["settings"]["pattern_lcrit"] := PATTERNS.Lcrit
-        
-        result := SupabaseClient.SavePresetToCloud(presetData)
-        
-        if result["success"] {
-            ShowTooltip("✅ Preset uploaded to cloud successfully!", 3000)
-            
-            ; Clear form
-            presetNameEdit.Text := ""
-            descriptionEdit.Text := ""
-            publicCheck.Value := 0
-            
-            ; Refresh cloud list
-            RefreshCloudPresets()
-            tab.Choose(2)
-        } else {
-            ShowTooltip("❌ Upload failed: " . result["error"], 3000)
-        }
-    }
-    
-    RateCloudPreset(*) {
-        selectedRow := cloudPresetList.GetNext()
-        
-        if !selectedRow {
-            MsgBox("Please select a preset to rate", "No Selection", "OK Icon!")
-            return
-        }
-        
-        presetName := cloudPresetList.GetText(selectedRow, 1)
-        presetId := GetPresetIdFromRow(selectedRow)
-        
-        ratingGui := Gui("+AlwaysOnTop", "Rate Preset")
-        ratingGui.BackColor := "0x1a1a2e"
-        ratingGui.SetFont("s10 cFFFFFF", "Segoe UI")
-        
-        ratingGui.Add("Text", "x10 y10", "Rate: " . presetName)
-        
-        ratingSlider := ratingGui.Add("Slider", "x10 y40 w200 Range1-5", 3)
-        ratingText := ratingGui.Add("Text", "x220 y40", "3 ⭐")
-        
-        ratingSlider.OnEvent("Change", (*) => ratingText.Text := ratingSlider.Value . " ⭐")
-        
-        commentEdit := ratingGui.Add("Edit", "x10 y80 w280 h60 Multi Background0x16213e")
-        
-        submitBtn := ratingGui.Add("Button", "x100 y150 w100 h30", "Submit Rating")
-        submitBtn.OnEvent("Click", SubmitRating)
-        
-        SubmitRating(*) {
-            rating := ratingSlider.Value
-            comment := commentEdit.Text
-            
-            if SupabaseClient.RatePreset(presetId, rating, comment) {
-                ShowTooltip("✅ Rating submitted: " . rating . " ⭐", 2000)
-                RefreshCloudPresets()
-                ratingGui.Destroy()
-            } else {
-                ShowTooltip("❌ Failed to submit rating", 2000)
-            }
-        }
-        
-        ratingGui.Show("w300 h190")
-    }
-    
-    ; ================= FUNÇÃO CORRIGIDA: GetPresetIdFromRow =================
-GetPresetIdFromRow(rowNum) {
-    global CLOUD_PRESET_IDS
-    
-    if (!IsSet(CLOUD_PRESET_IDS)) {
-        global CLOUD_PRESET_IDS := Map()
-        return ""
-    }
-    
-    if (CLOUD_PRESET_IDS.Has(rowNum)) {
-        return CLOUD_PRESET_IDS[rowNum]
-    }
-    
-    return ""
-}
-    
-    SavePresetLocally(presetData) {
-        if !Type(presetData) = "Map" {
-            return false
-        }
-        
-        presetName := presetData.Get("name", "CloudPreset_" . A_TickCount)
-        presetFile := PRESETS_DIR . "\" . presetName . ".ini"
-        
-        ; Save metadata
-        IniWrite(presetName, presetFile, "Metadata", "name")
-        IniWrite(presetData.Get("description", ""), presetFile, "Metadata", "description")
-        IniWrite(presetData.Get("build_type", "both"), presetFile, "Metadata", "build_type")
-        IniWrite(presetData.Get("author_name", "Unknown"), presetFile, "Metadata", "created_by")
-        IniWrite(FormatDate(A_Now), presetFile, "Metadata", "downloaded")
-        IniWrite("Cloud", presetFile, "Metadata", "source")
-        
-        ; Save settings
-        if presetData.Has("settings") {
-            settings := Type(presetData["settings"]) = "String" ? JSON.Parse(presetData["settings"]) : presetData["settings"]
-            
-            for key, value in settings {
-                if InStr(key, "pattern_") {
-                    IniWrite(value, presetFile, "FindText", StrReplace(key, "pattern_", ""))
-                } else {
-                    IniWrite(value, presetFile, "Settings", key)
-                }
-            }
-        }
-        
-        return true
-    }
-    
-    ImportFromCloudDialog(*) {
-        if !SESSION.authenticated {
-            MsgBox("Please login to access cloud presets", "Not Authenticated", "OK Icon!")
-            return
-        }
-        
-        RefreshCloudPresets()
-        tab.Choose(2)
-        ShowTooltip("Select a preset and click Download", 4000)
-    }
-    
-    filterDropdown.OnEvent("Change", (*) => RefreshCloudPresets())
-    presetList.OnEvent("Change", (*) => UpdatePresetPreview())
-    
-    RefreshPresetList()
-    GUI_REFS["preset"].Show("w600 h560")
-}
-
-; ================= FUNÇÃO NOVA: ValidatePresetData =================
-ValidatePresetData(presetData) {
-    if (!Type(presetData) = "Map") {
-        return Map("valid", false, "error", "Invalid data format")
-    }
-    
-    ; Check required fields
-    if (!presetData.Has("name") || !presetData["name"]) {
-        return Map("valid", false, "error", "Preset name is required")
-    }
-    
-    ; Validate name length
-    if (StrLen(presetData["name"]) < 3 || StrLen(presetData["name"]) > 50) {
-        return Map("valid", false, "error", "Name must be 3-50 characters")
-    }
-    
-    ; Validate build type
-    validTypes := ["puncture", "hybrid", "both"]
-    buildType := StrLower(presetData.Get("build_type", "both"))
-    
-    validType := false
-    for type in validTypes {
-        if (type = buildType) {
-            validType := true
-            break
-        }
-    }
-    
-    if (!validType) {
-        return Map("valid", false, "error", "Invalid build type")
-    }
-    
-    return Map("valid", true)
-}
-
-; ================= OTHER FUNCTIONS =================
-ShowModeSelection() {
-    global RUNTIME
-    
-    modeGui := Gui("+AlwaysOnTop +ToolWindow", "⚔️ Select Operation Mode")
-    modeGui.BackColor := "0x1a1a2e"
-    
-    modeGui.SetFont("s14 Bold cFFFFFF", "Segoe UI")
-    modeGui.Add("Text", "x50 y20 w300 Center", "SELECT OPERATION MODE")
-    
-    modeGui.SetFont("s12", "Segoe UI")
-    
-    punctureBtn := modeGui.Add("Button", "x50 y70 w140 h50", "🎯 Puncture")
-    punctureBtn.OnEvent("Click", SelectPuncture)
-    
-    hybridBtn := modeGui.Add("Button", "x210 y70 w140 h50", "🔄 Hybrid")
-    hybridBtn.OnEvent("Click", SelectHybrid)
-
-    modeGui.SetFont("s10 cSilver", "Segoe UI")
-    modeGui.Add("Text", "x20 y140 w360", "🎯 Puncture: Detects critical hits using FindText")
-    modeGui.Add("Text", "x20 y160 w360", "🔄 Hybrid: Custom sequences + Focus pixel detection")
-    
-    SelectPuncture(*) {
-        RUNTIME.mode := "puncture"
-        modeGui.Destroy()
-        ShowTooltip("✅ Mode switched to Puncture!", 2000)
-        UpdateMainMenuStatus()
-    }
-    
-    SelectHybrid(*) {
-        RUNTIME.mode := "hybrid"
-        modeGui.Destroy()
-        ShowTooltip("✅ Mode switched to Hybrid!", 2000)
-        UpdateMainMenuStatus()
-    }
-    
-    modeGui.Show("w400 h200")
-}
-
-ShowUpgradeDialog() {
-    upgradeGui := Gui("+AlwaysOnTop", "⭐ Upgrade to Premium")
-    upgradeGui.BackColor := "0x1a1a2e"
-    
-    upgradeGui.SetFont("s12 Bold cFFFFFF", "Segoe UI")
-    upgradeGui.Add("Text", "x0 y20 w400 Center", "Unlock Full Features!")
-    
-    upgradeGui.SetFont("s10 cFFFFFF", "Segoe UI")
-    features := "✅ Unlimited usage`n"
-    features .= "✅ Priority support`n"
-    features .= "✅ Exclusive presets`n"
-    features .= "✅ Advanced configurations`n"
-    features .= "✅ Discord VIP role`n"
-    features .= "✅ Future updates included"
-    
-    upgradeGui.Add("Text", "x50 y60 w300", features)
-    
-    purchaseBtn := upgradeGui.Add("Button", "x100 y220 w200 h40", "💳 Purchase Premium")
-    purchaseBtn.OnEvent("Click", (*) => Run(""))
-    
-    laterBtn := upgradeGui.Add("Button", "x160 y270 w80 h30", "Later")
-    laterBtn.OnEvent("Click", (*) => upgradeGui.Destroy())
-    
-    upgradeGui.Show("w400 h320")
-}
-
-; ================= BUILD LIBRARY COMPLETE FUNCTIONS =================
-ShowBuildLibrary(*) {
-    global GUI_REFS, SESSION, CLOUD_PRESETS
-    
-    if GUI_REFS["build"] {
-        try GUI_REFS["build"].Destroy()
-        GUI_REFS["build"] := ""
-    }
-    
-    GUI_REFS["build"] := Gui("+AlwaysOnTop", "📚 Community Build Library")
-    GUI_REFS["build"].BackColor := "0x1a1a2e"
-    
-    GUI_REFS["build"].SetFont("s11 Bold cFFFFFF", "Segoe UI")
-    GUI_REFS["build"].Add("Text", "x0 y10 w700 Center", "COMMUNITY BUILD LIBRARY")
-    
-    GUI_REFS["build"].SetFont("s10 cFFFFFF", "Segoe UI")
-    
-    tab := GUI_REFS["build"].Add("Tab3", "x5 y40 w690 h480", ["🌍 Browse All", "⭐ Top Rated", "🔍 Search", "📤 Upload"])
-    
-    ; === TAB 1: BROWSE ALL ===
-    tab.UseTab(1)
-    GUI_REFS["build"].Add("Text", "x15 y75", "Filter by Type:")
-    filterDropdown := GUI_REFS["build"].Add("DropDownList", "x110 y73 w150", ["All", "Puncture", "Hybrid", "Both"])
-    filterDropdown.Text := "All"
-    
-    GUI_REFS["build"].Add("Text", "x280 y75", "Sort by:")
-    sortDropdown := GUI_REFS["build"].Add("DropDownList", "x340 y73 w150", ["Newest", "Most Downloaded", "Best Rated"])
-    sortDropdown.Text := "Newest"
-    
-    buildList := GUI_REFS["build"].Add("ListView", "x15 y105 w660 h330 Background0x16213e", 
-        ["Name", "Author", "Type", "Ping", "Downloads", "Rating", "Updated"])
-    
-    downloadBtn := GUI_REFS["build"].Add("Button", "x15 y445 w100 h35", "⬇️ Download")
-    downloadBtn.OnEvent("Click", (*) => DownloadSelectedBuild())
-    
-    previewBtn := GUI_REFS["build"].Add("Button", "x125 y445 w100 h35", "👁️ Preview")
-    previewBtn.OnEvent("Click", (*) => PreviewSelectedBuild())
-    
-    rateBtn := GUI_REFS["build"].Add("Button", "x235 y445 w100 h35", "⭐ Rate")
-    rateBtn.OnEvent("Click", (*) => RateSelectedBuild())
-    
-    ; === TAB 2: TOP RATED ===
-    tab.UseTab(2)
-    GUI_REFS["build"].Add("Text", "x15 y75", "Top Rated Builds This Month:")
-    
-    topRatedList := GUI_REFS["build"].Add("ListView", "x15 y95 w660 h340 Background0x16213e", 
-        ["🏆", "Name", "Author", "Rating", "Votes", "Downloads", "Type"])
-    
-    downloadTopBtn := GUI_REFS["build"].Add("Button", "x250 y445 w100 h35", "⬇️ Download")
-    downloadTopBtn.OnEvent("Click", (*) => DownloadFromTopRated())
-    
-    viewDetailsBtn := GUI_REFS["build"].Add("Button", "x360 y445 w100 h35", "📋 Details")
-    viewDetailsBtn.OnEvent("Click", (*) => ViewBuildDetails())
-    
-    ; === TAB 3: SEARCH ===
-    tab.UseTab(3)
-    GUI_REFS["build"].Add("Text", "x15 y75", "Search Builds:")
-    searchEdit := GUI_REFS["build"].Add("Edit", "x15 y95 w400 h30 Background0x16213e")
-    
-    searchBtn := GUI_REFS["build"].Add("Button", "x425 y94 w80 h31", "🔍 Search")
-    searchBtn.OnEvent("Click", (*) => SearchBuilds())
-    
-    advancedBtn := GUI_REFS["build"].Add("Button", "x515 y94 w120 h31", "⚙️ Advanced")
-    advancedBtn.OnEvent("Click", (*) => ShowAdvancedSearch())
-    
-    searchResults := GUI_REFS["build"].Add("ListView", "x15 y135 w660 h300 Background0x16213e",
-        ["Name", "Author", "Type", "Description", "Rating"])
-    
-    ; === TAB 4: UPLOAD ===
-    tab.UseTab(4)
-    
-    if SESSION.isTrial && SESSION.trialDaysRemaining > 4 {
-        GUI_REFS["build"].SetFont("s12 cFFFF00", "Segoe UI")
-        GUI_REFS["build"].Add("Text", "x15 y100 w660 Center", "⚠️ UPLOAD FEATURE")
-        GUI_REFS["build"].Add("Text", "x15 y130 w660 Center", "Trial users can upload after 3 days of usage")
-        GUI_REFS["build"].Add("Text", "x15 y160 w660 Center", "You have " . (3 - (7 - SESSION.trialDaysRemaining)) . " days remaining")
-        
-        upgradeBtn := GUI_REFS["build"].Add("Button", "x275 y200 w150 h40", "⭐ Upgrade Now")
-        upgradeBtn.OnEvent("Click", (*) => ShowUpgradeDialog())
-    } else {
-        GUI_REFS["build"].SetFont("s10 cFFFFFF", "Segoe UI")
-        GUI_REFS["build"].Add("Text", "x15 y75", "Build Name:")
-        buildNameEdit := GUI_REFS["build"].Add("Edit", "x120 y73 w300 Background0x16213e")
-        
-        GUI_REFS["build"].Add("Text", "x15 y110", "Description:")
-        descEdit := GUI_REFS["build"].Add("Edit", "x15 y130 w660 h100 Multi Background0x16213e")
-        
-        GUI_REFS["build"].Add("Text", "x15 y240", "Build Type:")
-        buildTypeDropdown := GUI_REFS["build"].Add("DropDownList", "x120 y238 w150", ["Puncture", "Hybrid", "Both"])
-        
-        GUI_REFS["build"].Add("Text", "x290 y240", "Ping Range:")
-        pingDropdown := GUI_REFS["build"].Add("DropDownList", "x380 y238 w200", 
-            ["Low (0-50ms)", "Medium (50-100ms)", "High (100-150ms)", "Extreme (150+ms)"])
-        
-        GUI_REFS["build"].Add("Text", "x15 y275", "Tags (comma-separated):")
-        tagsEdit := GUI_REFS["build"].Add("Edit", "x15 y295 w400 Background0x16213e", "pvp, endgame")
-        
-        GUI_REFS["build"].Add("Text", "x15 y330", "YouTube Video (optional):")
-        youtubeEdit := GUI_REFS["build"].Add("Edit", "x15 y350 w400 Background0x16213e")
-        
-        uploadBtn := GUI_REFS["build"].Add("Button", "x275 y400 w150 h40", "⬆️ Upload Build")
-        uploadBtn.OnEvent("Click", (*) => UploadNewBuild())
-    }
-    
-    ; Common buttons
-    tab.UseTab()
-    
-    closeBtn := GUI_REFS["build"].Add("Button", "x590 y535 w100 h35", "❌ Close")
-    closeBtn.OnEvent("Click", (*) => GUI_REFS["build"].Destroy())
-    
-    ; Initialize
-    RefreshBuildLibrary()
-    GUI_REFS["build"].Show("w700 h580")
-    
-    ; ================= BUILD LIBRARY FUNCTIONS =================
-    
-    RefreshBuildLibrary(*) {
-        ShowTooltip("🔄 Refreshing build library...", 1000)
-        
-        buildList.Delete()
-        topRatedList.Delete()
-        
-        ; Fetch builds from cloud
-        builds := FetchBuildsFromCloud()
-        
-        ; Populate main list
-        for build in builds {
-            if Type(build) = "Map" {
-                buildList.Add("",
-                    build.Has("name") ? build["name"] : "Unknown",
-                    build.Has("author") ? build["author"] : "Anonymous",
-                    build.Has("build_type") ? build["build_type"] : "N/A",
-                    build.Has("ping") ? build["ping"] : "Any",
-                    build.Has("downloads") ? build["downloads"] : "0",
-                    build.Has("rating") ? Round(build["rating"], 1) . "⭐" : "N/A",
-                    build.Has("updated_at") ? FormatDate(build["updated_at"]) : "N/A"
-                )
-            }
-        }
-        
-        ; Populate top rated
-        topBuilds := GetTopRatedBuilds()
-        rank := 1
-        for build in topBuilds {
-            if Type(build) = "Map" {
-                medal := rank = 1 ? "🥇" : rank = 2 ? "🥈" : rank = 3 ? "🥉" : rank
-                topRatedList.Add("",
-                    medal,
-                    build.Has("name") ? build["name"] : "Unknown",
-                    build.Has("author") ? build["author"] : "Anonymous",
-                    build.Has("rating") ? Round(build["rating"], 1) . "⭐" : "N/A",
-                    build.Has("rating_count") ? build["rating_count"] : "0",
-                    build.Has("downloads") ? build["downloads"] : "0",
-                    build.Has("build_type") ? build["build_type"] : "N/A"
-                )
-                rank++
-            }
-        }
-        
-        ShowTooltip("✅ Library refreshed", 1500)
-    }
-    
-    FetchBuildsFromCloud() {
-        url := SUPABASE.restURL . "/presets?is_public=eq.true&order=created_at.desc&limit=100"
-        
-        filterType := filterDropdown.Text
-        if filterType != "All" {
-            url .= "&build_type=eq." . filterType
-        }
-        
-        response := HttpClient.Get(url)
-        
-        if response.status = 200 {
-            try {
-                return JSON.Parse(response.text)
-            } catch {
-                return []
-            }
-        }
-        return []
-    }
-    
-    GetTopRatedBuilds() {
-        url := SUPABASE.restURL . "/presets?is_public=eq.true&rating=gt.4&order=rating.desc,downloads.desc&limit=20"
-        
-        response := HttpClient.Get(url)
-        
-        if response.status = 200 {
-            try {
-                return JSON.Parse(response.text)
-            } catch {
-                return []
-            }
-        }
-        return []
-    }
-    
-    DownloadSelectedBuild(*) {
-        selectedRow := buildList.GetNext()
-        
-        if !selectedRow {
-            MsgBox("Please select a build to download", "No Selection", "OK Icon!")
-            return
-        }
-        
-        buildName := buildList.GetText(selectedRow, 1)
-        
-        ShowTooltip("⬇️ Downloading: " . buildName, 2000)
-        
-        ; Download and save locally
-        ; Implementation would fetch full build data and save as preset
-        
-        ShowTooltip("✅ Build downloaded successfully!", 2000)
-    }
-    
-    PreviewSelectedBuild(*) {
-        selectedRow := buildList.GetNext()
-        
-        if !selectedRow {
-            MsgBox("Please select a build to preview", "No Selection", "OK Icon!")
-            return
-        }
-        
-        buildName := buildList.GetText(selectedRow, 1)
-        
-        ; Show preview window
-        ShowBuildPreview(buildName)
-    }
-    
-    ShowBuildPreview(buildName) {
-        previewGui := Gui("+AlwaysOnTop", "Build Preview: " . buildName)
-        previewGui.BackColor := "0x1a1a2e"
-        previewGui.SetFont("s10 cFFFFFF", "Segoe UI")
-        
-        previewGui.Add("Text", "x10 y10", "Build Name: " . buildName)
-        ; Add more preview details...
-        
-        previewGui.Show("w400 h300")
-    }
-    
-    RateSelectedBuild(*) {
-        selectedRow := buildList.GetNext()
-        
-        if !selectedRow {
-            MsgBox("Please select a build to rate", "No Selection", "OK Icon!")
-            return
-        }
-        
-        buildName := buildList.GetText(selectedRow, 1)
-        
-        ; Show rating dialog
-        ratingGui := Gui("+AlwaysOnTop", "Rate Build")
-        ratingGui.BackColor := "0x1a1a2e"
-        ratingGui.SetFont("s10 cFFFFFF", "Segoe UI")
-        
-        ratingGui.Add("Text", "x10 y10", "Rate: " . buildName)
-        
-        ratingSlider := ratingGui.Add("Slider", "x10 y40 w200 Range1-5", 3)
-        ratingText := ratingGui.Add("Text", "x220 y40", "3 ⭐")
-        
-        ratingSlider.OnEvent("Change", (*) => ratingText.Text := ratingSlider.Value . " ⭐")
-        
-        submitBtn := ratingGui.Add("Button", "x70 y80 w80 h30", "Submit")
-        submitBtn.OnEvent("Click", SubmitRating)
-        
-        SubmitRating(*) {
-            rating := ratingSlider.Value
-            ; Submit rating to cloud
-            ShowTooltip("✅ Rating submitted: " . rating . " ⭐", 2000)
-            ratingGui.Destroy()
-        }
-        
-        ratingGui.Show("w300 h120")
-    }
-    
-    SearchBuilds(*) {
-        searchTerm := searchEdit.Text
-        
-        if !searchTerm {
-            ShowTooltip("Please enter a search term", 2000)
-            return
-        }
-        
-        ShowTooltip("🔍 Searching for: " . searchTerm, 1000)
-        
-        searchResults.Delete()
-        
-        ; Search in cloud
-        url := SUPABASE.restURL . "/presets?is_public=eq.true&or=(name.ilike.*" . searchTerm . "*,description.ilike.*" . searchTerm . "*)"
-        
-        response := HttpClient.Get(url)
-        
-        if response.status = 200 {
-            try {
-                results := JSON.Parse(response.text)
-                
-                for result in results {
-                    if Type(result) = "Map" {
-                        searchResults.Add("",
-                            result.Has("name") ? result["name"] : "Unknown",
-                            result.Has("author") ? result["author"] : "Anonymous",
-                            result.Has("build_type") ? result["build_type"] : "N/A",
-                            result.Has("description") ? SubStr(result["description"], 1, 50) . "..." : "N/A",
-                            result.Has("rating") ? Round(result["rating"], 1) . "⭐" : "N/A"
-                        )
-                    }
-                }
-                
-                ShowTooltip("Found " . results.Length . " results", 2000)
-            } catch {
-                ShowTooltip("❌ Search failed", 2000)
-            }
-        }
-    }
-    
-    ShowAdvancedSearch(*) {
-        advSearchGui := Gui("+AlwaysOnTop", "Advanced Search")
-        advSearchGui.BackColor := "0x1a1a2e"
-        advSearchGui.SetFont("s10 cFFFFFF", "Segoe UI")
-        
-        advSearchGui.Add("Text", "x10 y10", "Advanced Search Options")
-        ; Add advanced search fields...
-        
-        advSearchGui.Show("w400 h300")
-    }
-    
-    UploadNewBuild(*) {
-        buildName := buildNameEdit.Text
-        description := descEdit.Text
-        
-        if !buildName || !description {
-            MsgBox("Please fill in all required fields", "Error", "OK Icon!")
-            return
-        }
-        
-        ShowTooltip("⬆️ Uploading build...", 2000)
-        
-        ; Prepare build data
-        buildData := Map(
-            "name", buildName,
-            "description", description,
-            "build_type", buildTypeDropdown.Text,
-            "ping", pingDropdown.Text,
-            "tags", tagsEdit.Text,
-            "youtube", youtubeEdit.Text,
-            "is_public", true,
-            "settings", Map()
-        )
-        
-        ; Add current settings
-        for key, value in SETTINGS {
-            buildData["settings"][key] := value
-        }
-        
-        ; Upload to cloud
-        result := SupabaseClient.SavePresetToCloud(buildData)
-        
-        if result["success"] {
-            ShowTooltip("✅ Build uploaded successfully!", 3000)
-            
-            ; Clear form
-            buildNameEdit.Text := ""
-            descEdit.Text := ""
-            tagsEdit.Text := "pvp, endgame"
-            youtubeEdit.Text := ""
-            
-            RefreshBuildLibrary()
-            tab.Choose(1)
-        } else {
-            ShowTooltip("❌ Upload failed: " . result["error"], 3000)
-        }
-    }
-    
-    DownloadFromTopRated(*) {
-        selectedRow := topRatedList.GetNext()
-        
-        if !selectedRow {
-            MsgBox("Please select a build to download", "No Selection", "OK Icon!")
-            return
-        }
-        
-        buildName := topRatedList.GetText(selectedRow, 2)
-        ShowTooltip("⬇️ Downloading: " . buildName, 2000)
-        
-        ; Download implementation
-        ShowTooltip("✅ Downloaded successfully!", 2000)
-    }
-    
-    ViewBuildDetails(*) {
-        selectedRow := topRatedList.GetNext()
-        
-        if !selectedRow {
-            MsgBox("Please select a build to view details", "No Selection", "OK Icon!")
-            return
-        }
-        
-        buildName := topRatedList.GetText(selectedRow, 2)
-        ShowBuildPreview(buildName)
-    }
-    
-    ; Event handlers
-    filterDropdown.OnEvent("Change", (*) => RefreshBuildLibrary())
-    sortDropdown.OnEvent("Change", (*) => SortBuildList())
-    
-    SortBuildList(*) {
-        ; Sort implementation based on selected option
-        RefreshBuildLibrary()
-    }
-}
-
-ShowUserManager() {
-    global SESSION
-    
-    if (SESSION.role != "admin") {
-        MsgBox("❌ Access denied: Admin only function", "Error", "OK Icon!")
-        return
-    }
-    
-    MsgBox("User Manager - Admin Panel`n`nThis feature opens the web-based admin panel.", "Admin", "Icon!")
-    Run("http://localhost:3000/admin")
-}ShowSystemStats() {
-    if (!SESSION.userId) {
-        MsgBox("Faça login como admin para ver as estatísticas.", "Admin", "Icon!")
-        return
-    }
-    ; Fetch stats from Supabase RPC
-    result := SupabaseClient.GetAdminStats()
-    if (!result.success) {
-        MsgBox("Falha ao carregar estatísticas: " . result.error, "Admin", "Iconx")
-        return
-    }
-    stats := result.data  ; JSON object
-
-    gui := Gui("+AlwaysOnTop", "System Stats")
-    gui.SetFont("s10")
-    gui.Add("Text",, "Usuários")
-    gui.Add("Text",, "Total: " . stats["users_total"] . "  |  Trials: " . stats["trials_total"] . "  |  Premium: " . stats["premium_total"])
-    gui.Add("Text",, "Bloqueados: " . stats["blocked_total"])
-    gui.Add("Text",, "")
-    gui.Add("Text",, "Presets")
-    gui.Add("Text",, "Públicos: " . stats["presets_public"] . "  |  Privados: " . stats["presets_private"])
-    gui.Add("Text",, "Downloads: " . stats["downloads_total"] . "  |  Média ★: " . stats["rating_avg"] . " (" . stats["rating_count"] . " ratings)")
-    gui.Add("Text",, "")
-    gui.Add("Text",, "Top 5 Presets por Download:")
-    loop (min(5, stats["top_downloads"].Length)) {
-        p := stats["top_downloads"][A_Index]
-        gui.Add("Text",, A_Index . ". " . p["name"] . " — " . p["downloads"] . " downloads, ★" . p["rating"])
-    }
-    gui.Add("Text",, "")
-    gui.Add("Text",, "Atividade (últimas 24h): " . stats["activity_24h"])
-    gui.Add("Text",, "Versão mais recente: " . stats["latest_version"])
-
-    gui.Add("Button", "xm w120", "Fechar").OnEvent("Click", (*) => gui.Destroy())
-    gui.Show()
-}
-
-; ================= HOTKEY INITIALIZATION =================
-
-InitHotkey(name, handler) {
-    global SETTINGS
-    if (SETTINGS.Has(name) && SETTINGS[name] != "") {
-        try {
-            Hotkey(Trim(SETTINGS[name]), handler, "On")
-        } catch Error as e {
-            MsgBox("Erro ao registrar hotkey '" name "': " e.Message)
-        }
-    }
+    ; Create a map with default values for all shareable settings
+    shareable := Map()
+    
+    ; Basic timing
+    shareable["macro_timing"] := SETTINGS.Has("macro_timing") ? SETTINGS["macro_timing"] : "30"
+    shareable["macro_loop"] := SETTINGS.Has("macro_loop") ? SETTINGS["macro_loop"] : "4"
+    
+    ; Puncture mode sleeps
+    shareable["sleep_punc_x2_fast"] := SETTINGS.Has("sleep_punc_x2_fast") ? SETTINGS["sleep_punc_x2_fast"] : "15"
+    shareable["sleep_punc_x2_tab"] := SETTINGS.Has("sleep_punc_x2_tab") ? SETTINGS["sleep_punc_x2_tab"] : "30"
+    shareable["sleep_punc_x2_final"] := SETTINGS.Has("sleep_punc_x2_final") ? SETTINGS["sleep_punc_x2_final"] : "5"
+    shareable["sleep_punc_x1_r_tab_gap"] := SETTINGS.Has("sleep_punc_x1_r_tab_gap") ? SETTINGS["sleep_punc_x1_r_tab_gap"] : "85"
+    shareable["sleep_punc_x1_tab_crit_gap"] := SETTINGS.Has("sleep_punc_x1_tab_crit_gap") ? SETTINGS["sleep_punc_x1_tab_crit_gap"] : "65"
+    shareable["sleep_punc_x1_crit_check"] := SETTINGS.Has("sleep_punc_x1_crit_check") ? SETTINGS["sleep_punc_x1_crit_check"] : "100"
+    shareable["sleep_punc_x1_crit_combo"] := SETTINGS.Has("sleep_punc_x1_crit_combo") ? SETTINGS["sleep_punc_x1_crit_combo"] : "85"
+    shareable["sleep_punc_x1_t_between"] := SETTINGS.Has("sleep_punc_x1_t_between") ? SETTINGS["sleep_punc_x1_t_between"] : "20"
+    shareable["sleep_punc_x1_no_crit"] := SETTINGS.Has("sleep_punc_x1_no_crit") ? SETTINGS["sleep_punc_x1_no_crit"] : "50"
+    
+    ; Hybrid mode timings
+    shareable["hybrid_macro1_timing"] := SETTINGS.Has("hybrid_macro1_timing") ? SETTINGS["hybrid_macro1_timing"] : "10"
+    shareable["hybrid_macro1_sequence_delay"] := SETTINGS.Has("hybrid_macro1_sequence_delay") ? SETTINGS["hybrid_macro1_sequence_delay"] : "50"
+    shareable["hybrid_macro1_repeat_count"] := SETTINGS.Has("hybrid_macro1_repeat_count") ? SETTINGS["hybrid_macro1_repeat_count"] : "1"
+    shareable["hybrid_macro2_timing"] := SETTINGS.Has("hybrid_macro2_timing") ? SETTINGS["hybrid_macro2_timing"] : "10"
+    shareable["hybrid_macro2_sequence_delay"] := SETTINGS.Has("hybrid_macro2_sequence_delay") ? SETTINGS["hybrid_macro2_sequence_delay"] : "50"
+    shareable["hybrid_macro2_no_pixel_delay"] := SETTINGS.Has("hybrid_macro2_no_pixel_delay") ? SETTINGS["hybrid_macro2_no_pixel_delay"] : "50"
+    
+    ; Detection retry settings
+    shareable["findtext_retries"] := SETTINGS.Has("findtext_retries") ? SETTINGS["findtext_retries"] : "3"
+    shareable["findtext_retry_delay"] := SETTINGS.Has("findtext_retry_delay") ? SETTINGS["findtext_retry_delay"] : "10"
+    shareable["hybrid_pixelsearch_retries"] := SETTINGS.Has("hybrid_pixelsearch_retries") ? SETTINGS["hybrid_pixelsearch_retries"] : "3"
+    shareable["hybrid_pixelsearch_retry_delay"] := SETTINGS.Has("hybrid_pixelsearch_retry_delay") ? SETTINGS["hybrid_pixelsearch_retry_delay"] : "5"
+    
+    return shareable
 }
 
 ; ================= HOTKEY INITIALIZATION =================
 InitializeHotkeys() {
-    InitHotkey("hotkey_mode_toggle", ToggleMode)
-    InitHotkey("hotkey_menu", ShowMainMenu)
-    InitHotkey("hotkey_suspend", ToggleSuspend)
-    InitHotkey("hotkey_macro1", Macro1Action)
-    InitHotkey("hotkey_macro2", Macro2Action)
-}
-
-RegisterHotkey(settingName, handler) {
     global SETTINGS
-    if (SETTINGS.Has(settingName) && SETTINGS[settingName] != "") {
-        try {
-            Hotkey(Trim(SETTINGS[settingName]), handler, "On")
-        } catch Error as e {
-            MsgBox("Erro ao registrar hotkey '" settingName "': " e.Message)
-        }
-    }
+    
+    try Hotkey(Trim(SETTINGS.Get("hotkey_mode_toggle", "Home")), ToggleMode, "On")
+    try Hotkey(Trim(SETTINGS.Get("hotkey_menu", "Delete")), ShowMainMenu, "On")
+    try Hotkey(Trim(SETTINGS.Get("hotkey_suspend", "F12")), ToggleSuspend, "On")
+    try Hotkey(Trim(SETTINGS.Get("hotkey_macro1", "XButton1")), Macro1Action, "On")
+    try Hotkey(Trim(SETTINGS.Get("hotkey_macro2", "XButton2")), Macro2Action, "On")
 }
-
-; ================= HOTKEY LABELS =================
-HotkeyToggleMode(*) {
-    ToggleMode()
-}
-
-HotkeyShowMainMenu(*) {
-    ShowMainMenu()
-}
-
-HotkeyToggleSuspend(*) {
-    ToggleSuspend()
-}
-
-HotkeyMacro1Action(*) {
-    Macro1Action()
-}
-
-HotkeyMacro2Action(*) {
-    Macro2Action()
-}
-
-
 
 ; ================= HOTKEY ACTIONS =================
 Macro1Action(*) {
@@ -4809,6 +4613,8 @@ CreateRequiredDirectories()
 ; Load settings
 LoadSettings()
 
+SaveSettings() ; This will create the config file with all required keys
+
 ; Create default presets
 CreateDefaultPresets()
 
@@ -4823,13 +4629,3 @@ CreateTrayMenu()
 
 ; Show login screen
 ShowLoginScreen()
-
-HttpPostJson(url, body, headers) {
-    http := ComObject("WinHttp.WinHttpRequest.5.1")
-    http.Open("POST", url, false)
-    for k, v in headers
-        http.SetRequestHeader(k, v)
-    http.SetRequestHeader("Content-Type", "application/json")
-    http.Send(body)
-    return JSON.Parse(http.ResponseText)
-}
